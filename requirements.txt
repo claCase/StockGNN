@@ -1,0 +1,6 @@
+tensorflow-gpu==2.10.0
+matplotlib==3.7.1
+numpy==1.23.2
+pandas==1.5.3
+spektral==1.2.0
+argparse==1.4.0
