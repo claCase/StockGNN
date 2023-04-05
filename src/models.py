@@ -1,5 +1,6 @@
 import tensorflow as tf
-from src.layers import NestedGRUGATCell, NestedGRUAttentionCell, GATv2Layer
+from src.layers import NestedGRUGATCell, NestedGRUAttentionCell, NestedGRUGATCellSingle, GATv2Layer
+#from src.losses import custom_mse
 
 m = tf.keras.models
 l = tf.keras.layers
@@ -7,6 +8,7 @@ l = tf.keras.layers
 
 def build_RNNGAT(nodes,
                  f,
+                 *args,
                  kwargs_cell={"dropout": 0.01,
                               "activation": "relu",
                               "recurrent_dropout": 0.01,
@@ -16,11 +18,14 @@ def build_RNNGAT(nodes,
                               "gatv2": True,
                               "concat_heads": False,
                               "return_attn_coef": False},
-                 kwargs_out={"activation": "tanh"}
-                 ):
+                 kwargs_out={"activation": "tanh"},
+                 single=True):
     i1 = tf.keras.Input(shape=(None, nodes, f), batch_size=1)
     i2 = tf.keras.Input(shape=(None, nodes, nodes), batch_size=1)
-    cell = NestedGRUGATCell(nodes, **kwargs_cell)
+    if single:
+        cell = NestedGRUGATCellSingle(nodes, *args, **kwargs_cell)
+    else:
+        cell = NestedGRUGATCell(nodes, *args, **kwargs_cell)
     rnn = tf.keras.layers.RNN(cell, return_sequences=True, return_state=True)
     pred_layer = tf.keras.layers.Dense(1, **kwargs_out)
     o, h = rnn((i1, i2))
@@ -28,7 +33,8 @@ def build_RNNGAT(nodes,
         p = pred_layer(o[0])
     else:
         p = pred_layer(o)
-    return tf.keras.models.Model([i1, i2], [o, p])
+    model = tf.keras.models.Model([i1, i2], [o, p])
+    return model
 
 
 def build_RNNAttention(nodes,
