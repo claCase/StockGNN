@@ -8,3 +8,4 @@ Prediction MSE
 Runtime Memory Profile for 70 prediction time steps 
 ![alt-text](https://github.com/claCase/StockGNN/blob/master/results/profiler_summary_usage.png)
 ![alt-text](https://github.com/claCase/StockGNN/blob/master/results/profiler_memory_usage.png)
+![alt-text](https://github.com/claCase/StockGNN/blob/master/results/on_device_ops.png)
