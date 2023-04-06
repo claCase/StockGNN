@@ -60,5 +60,16 @@ def diff_log(matrix):
     return diff
 
 
+def diff_log1(matrix):
+    t0 = np.log(matrix[:-1])
+    mask0 = np.isinf(t0)
+
+    t1 = np.log(matrix[1:])
+
+    diff = t1 - t0
+
+    return diff
+
+
 if __name__ == "__main__":
     tickers_df(tickers_path)

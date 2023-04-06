@@ -9,6 +9,7 @@ act = tf.keras.activations
 init = tf.keras.initializers
 
 
+@tf.keras.utils.register_keras_serializable()
 class NestedGRUGATCell(DropoutRNNCellMixin, l.Layer):
     def __init__(self,
                  nodes,
@@ -109,14 +110,122 @@ class NestedGRUGATCell(DropoutRNNCellMixin, l.Layer):
             return h_prime, h_prime
 
     def get_config(self):
-        config = {"nodes": self.tot_nodes,
+        config = {"tot_nodes": self.tot_nodes,
                   "hidden_size_out": self.hidden_size_out,
                   "dropout": self.dropout,
                   "recurrent_dropout": self.recurrent_dropout,
-                  "regularizer": self.regularizer
+                  "regularizer": self.regularizer,
+                  "layer_norm": self.layer_norm,
+                  "return_attn_coef": self.return_attn_coef
                   }
         config.update(_config_for_enable_caching_device(self))
         base_config = super(NestedGRUGATCell, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+
+@tf.keras.utils.register_keras_serializable()
+class NestedGRUGATCellSingle(DropoutRNNCellMixin, l.Layer):
+    def __init__(self,
+                 nodes,
+                 dropout,
+                 recurrent_dropout,
+                 hidden_size_out,
+                 activation,
+                 regularizer=None,
+                 layer_norm=False,
+                 gatv2=False,
+                 attn_heads=4,
+                 return_attn_coef=False,
+                 concat_heads=False,
+                 **kwargs):
+        super(NestedGRUGATCellSingle, self).__init__(**kwargs)
+        self.tot_nodes = nodes
+        self.hidden_size_out = hidden_size_out
+        self.activation = activation
+        self.recurrent_dropout = recurrent_dropout
+        self.dropout = dropout
+        self.regularizer = regularizer
+        self.layer_norm = layer_norm
+        self.return_attn_coef = return_attn_coef
+        self.state_size = tf.TensorShape((self.tot_nodes, self.hidden_size_out))
+        if return_attn_coef:
+            self.output_size = [tf.TensorShape((self.tot_nodes, self.hidden_size_out)),
+                                tf.TensorShape((attn_heads, self.tot_nodes, self.tot_nodes)),
+                                tf.TensorShape((attn_heads, self.tot_nodes, self.tot_nodes)),
+                                tf.TensorShape((attn_heads, self.tot_nodes, self.tot_nodes))
+                                ]
+        else:
+            self.output_size = tf.TensorShape((self.tot_nodes, self.hidden_size_out))
+
+        if self.layer_norm:
+            self.ln = l.LayerNormalization()
+        if tf.compat.v1.executing_eagerly_outside_functions():
+            self._enable_caching_device = kwargs.pop('enable_caching_device', True)
+        else:
+            self._enable_caching_device = kwargs.pop('enable_caching_device', False)
+        if gatv2:
+            gat = GATv2Layer
+        else:
+            gat = GATConv
+        self.gnn = gat(channels=hidden_size_out, attn_heads=4, concat_heads=concat_heads, dropout_rate=0,
+                       activation=self.activation, return_attn_coef=return_attn_coef)
+
+    def build(self, input_shape):
+        x, a = input_shape
+        default_caching_device = _caching_device(self)
+        self.b_u = self.add_weight(shape=(self.hidden_size_out,), initializer=init.Zeros, name="b_u",
+                                   regularizer=self.regularizer, caching_device=default_caching_device)
+        self.b_r = self.add_weight(shape=(self.hidden_size_out,), initializer=init.Zeros, name="b_r",
+                                   regularizer=self.regularizer, caching_device=default_caching_device)
+        self.b_c = self.add_weight(shape=(self.hidden_size_out,), initializer=init.zeros, name="b_c",
+                                   regularizer=self.regularizer, caching_device=default_caching_device)
+        self.W_u = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
+                                   initializer="he_normal", name="W_u_p",
+                                   regularizer=self.regularizer, caching_device=default_caching_device)
+        self.W_r = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
+                                   initializer="he_normal", name="W_r_p",
+                                   regularizer=self.regularizer, caching_device=default_caching_device)
+        self.W_c = self.add_weight(shape=(self.hidden_size_out + x[-1], self.hidden_size_out),
+                                   initializer="he_normal", name="W_c_p",
+                                   regularizer=self.regularizer, caching_device=default_caching_device)
+
+    def call(self, inputs, states, training, *args, **kwargs):
+        x, a = tf.nest.flatten(inputs)
+        h = states[0]
+        if 0 < self.recurrent_dropout < 1:
+            h_mask = self.get_recurrent_dropout_mask_for_cell(inputs=h, training=training, count=1)
+            h = h * h_mask
+        if 0 < self.dropout < 1:
+            x_mask = self.get_dropout_mask_for_cell(inputs=x, training=training, count=1)
+            x = x * x_mask
+
+        if self.return_attn_coef:
+            x_gat, attn = self.gnn([tf.concat([x, h], -1), a])
+        else:
+            x_gat = self.gnn([tf.concat([x, h], -1), a])
+        u = tf.nn.sigmoid(self.b_u + x_gat @ self.W_u)
+        r = tf.nn.sigmoid(self.b_r + x_gat @ self.W_r)
+        c = tf.concat([x, r * h], -1)
+        c = tf.nn.tanh(self.b_c + c @ self.W_c)
+        h_prime = u * h + (1 - u) * c
+        if self.layer_norm:
+            h_prime = self.ln(h_prime)
+        if self.return_attn_coef:
+            return (h_prime, attn), h_prime
+        else:
+            return h_prime, h_prime
+
+    def get_config(self):
+        config = {"tot_nodes": self.tot_nodes,
+                  "hidden_size_out": self.hidden_size_out,
+                  "dropout": self.dropout,
+                  "recurrent_dropout": self.recurrent_dropout,
+                  "regularizer": self.regularizer,
+                  "layer_norm": self.layer_norm,
+                  "return_attn_coef": self.return_attn_coef
+                  }
+        config.update(_config_for_enable_caching_device(self))
+        base_config = super(NestedGRUGATCellSingle, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
 
@@ -321,7 +430,7 @@ class SelfAttention(l.Layer):
         if self.dropout_rate:
             self.drop = l.Dropout(self.dropout_rate)
 
-    def call(self, inputs, *args, **kwargs):
+    def call(self, inputs, mask, *args, **kwargs):
         """
         query=key=value:
             - n: nodes if time series or batch size
@@ -333,13 +442,15 @@ class SelfAttention(l.Layer):
         a=input adjacency matrix of shape NxTxT
             -
         """
-        x, a = inputs
+        x = inputs
+        a = mask
         query = tf.einsum("ntd,hdo->ntho", x, self.q_w)
         key = tf.einsum("ntd,hdo->ntho", x, self.k_w)
         value = tf.einsum("ntd,hdo->ntho", x, self.v_w)
         qk = tf.einsum("ntho,nzho->nhtz", query, key)  # NxHxTxT
         qk /= tf.sqrt(tf.cast(self.channels, tf.float32))
-        qk += tf.transpose([tf.where(a == 0.0, -1e10, 0.0)] * self.attn_heads, perm=(1, 0, 2, 3))  # NxHxTxT
+        if mask is not None:
+            qk += tf.transpose([tf.where(a == 0.0, -1e10, 0.0)] * self.attn_heads, perm=(1, 0, 2, 3))  # NxHxTxT
         soft_qk = tf.nn.softmax(qk, axis=-1)
         if self.dropout_rate:
             soft_qk = self.drop(soft_qk)
@@ -380,7 +491,8 @@ class GATv2Layer(l.Layer):
         self.initializer = initializer
         self.regularizer = regularizer
         self.return_attention = return_attn_coef
-        self.dropout = l.Dropout(dropout_rate)
+        self.dropout_rate = dropout_rate
+        self.dropout_attn = l.Dropout(dropout_rate)
 
     def build(self, input_shape):
         x, a = input_shape
@@ -410,7 +522,7 @@ class GATv2Layer(l.Layer):
             self.bias = self.add_weight(name="kern_bias",
                                         shape=(1, *self.attn_shape))
             self.bias0 = self.add_weight(name="kern_bias_i",
-                                       shape=(self.channels,))
+                                         shape=(self.channels,))
 
     def call(self, inputs, training=None, mask=None):
         '''
@@ -442,7 +554,7 @@ class GATv2Layer(l.Layer):
             x_ij_prime = act.get(self.activation)(x_ij_prime)
             a_ij = tf.einsum("EHO,HO->EH", x_ij_prime, self.attn)
             a_soft_ij = unsorted_segment_softmax(a_ij, j, N)
-            a_soft_ij = self.dropout(a_soft_ij)
+            a_soft_ij = self.dropout_attn(a_soft_ij)
             out = a_soft_ij[..., None] * x_i[:, None]  # EH
             out = tf.math.unsorted_segment_sum(out, j, N)  # NHF
             if self.concatenate_output:
@@ -464,7 +576,7 @@ class GATv2Layer(l.Layer):
             a_mask = tf.where(a == 0, -10e9, 0.0)
             a_mask = tf.repeat(a_mask[:, None, ...], self.heads, 1)  # BHNN
             a_soft_ij = tf.nn.softmax(a_mask + e_ij)
-            a_soft_ij = self.dropout(a_soft_ij)
+            a_soft_ij = self.dropout_attn(a_soft_ij)
             x_prime = tf.einsum("...HNK,...NF->...KHF", a_soft_ij, x)
             if self.concatenate_output:
                 out = tf.reshape(x_prime, (*x.shape[:2], self.heads * x.shape[-1]))  # BxNx(FH)
@@ -474,3 +586,19 @@ class GATv2Layer(l.Layer):
                 return out, a_soft_ij
             else:
                 return out
+
+    def get_config(self):
+        config = {"heads": self.heads,
+                  "channels": self.channels,
+                  "concatenate_output": self.concatenate_output,
+                  "add_bias": self.add_bias,
+                  "activation": self.activation,
+                  "residual": self.residual,
+                  "initializer": self.initializer,
+                  "regularizer": self.regularizer,
+                  "return_attention": self.return_attention,
+                  "dropout_rate": self.dropout_rate,
+                  }
+        config.update(_config_for_enable_caching_device(self))
+        base_config = super(GATv2Layer, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))

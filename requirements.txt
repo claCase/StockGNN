@@ -1,4 +1,6 @@
 tensorflow-gpu==2.10.0
+tensorboard==2.10.0
+tensorboard-plugin-profile==2.8.0
 matplotlib==3.7.1
 numpy==1.23.2
 pandas==1.5.3
