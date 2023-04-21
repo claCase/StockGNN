@@ -3,36 +3,45 @@ from tensorflow.python.keras.layers.recurrent import DropoutRNNCellMixin, _confi
     _caching_device
 from spektral.layers import GATConv
 from spektral.layers.ops import unsorted_segment_softmax
+from src.losses import min_cut
 
 l = tf.keras.layers
 act = tf.keras.activations
 init = tf.keras.initializers
+regu = tf.keras.regularizers
 
 
-@tf.keras.utils.register_keras_serializable()
-class NestedGRUGATCell(DropoutRNNCellMixin, l.Layer):
+@tf.keras.utils.register_keras_serializable("NestedRNN", "NestedGRUGATCell")
+class NestedGRUGATCell(DropoutRNNCellMixin, tf.keras.__internal__.layers.BaseRandomLayer):
     def __init__(self,
                  nodes,
                  dropout,
                  recurrent_dropout,
-                 hidden_size_out,
-                 activation,
-                 regularizer=None,
-                 layer_norm=False,
-                 gatv2=False,
-                 attn_heads=4,
-                 return_attn_coef=False,
+                 attn_heads,
+                 channels,
                  concat_heads=False,
+                 add_bias=True,
+                 activation="relu",
+                 regularizer=None,
+                 return_attn_coef=False,
+                 layer_norm=False,
+                 initializer=init.glorot_normal,
+                 gatv2=True,
                  **kwargs):
         super(NestedGRUGATCell, self).__init__(**kwargs)
         self.tot_nodes = nodes
-        self.hidden_size_out = hidden_size_out
-        self.activation = activation
-        self.recurrent_dropout = recurrent_dropout
         self.dropout = dropout
+        self.recurrent_dropout = recurrent_dropout
+        self.attn_heads = attn_heads
+        self.hidden_size_out = channels
+        self.concat_heads = concat_heads
+        self.add_bias = add_bias
+        self.activation = activation
         self.regularizer = regularizer
-        self.layer_norm = layer_norm
         self.return_attn_coef = return_attn_coef
+        self.layer_norm = layer_norm
+        self.initializer = initializer
+        self.gatv2 = gatv2
         self.state_size = tf.TensorShape((self.tot_nodes, self.hidden_size_out))
         if return_attn_coef:
             self.output_size = [tf.TensorShape((self.tot_nodes, self.hidden_size_out)),
@@ -53,30 +62,35 @@ class NestedGRUGATCell(DropoutRNNCellMixin, l.Layer):
             gat = GATv2Layer
         else:
             gat = GATConv
-        self.gat_u = gat(channels=hidden_size_out, attn_heads=4, concat_heads=concat_heads, dropout_rate=0,
+
+        self.default_caching_device = _caching_device(self)
+        self.gat_u = gat(channels=self.hidden_size_out, attn_heads=self.attn_heads, concat_heads=concat_heads,
+                         dropout_rate=0,
                          activation=self.activation, return_attn_coef=return_attn_coef)
-        self.gat_r = gat(channels=hidden_size_out, attn_heads=4, concat_heads=concat_heads, dropout_rate=0,
+        self.gat_r = gat(channels=self.hidden_size_out, attn_heads=self.attn_heads, concat_heads=concat_heads,
+                         dropout_rate=0,
                          activation=self.activation, return_attn_coef=return_attn_coef)
-        self.gat_c = gat(channels=hidden_size_out, attn_heads=4, concat_heads=concat_heads, dropout_rate=0,
+        self.gat_c = gat(channels=self.hidden_size_out, attn_heads=self.attn_heads, concat_heads=concat_heads,
+                         dropout_rate=0,
                          activation=self.activation, return_attn_coef=return_attn_coef)
 
     def build(self, input_shape):
-        default_caching_device = _caching_device(self)
+
         self.b_u = self.add_weight(shape=(self.hidden_size_out,), initializer=init.Zeros, name="b_u",
-                                   regularizer=self.regularizer, caching_device=default_caching_device)
+                                   regularizer=self.regularizer, caching_device=self.default_caching_device)
         self.b_r = self.add_weight(shape=(self.hidden_size_out,), initializer=init.Zeros, name="b_r",
-                                   regularizer=self.regularizer, caching_device=default_caching_device)
+                                   regularizer=self.regularizer, caching_device=self.default_caching_device)
         self.b_c = self.add_weight(shape=(self.hidden_size_out,), initializer=init.zeros, name="b_c",
-                                   regularizer=self.regularizer, caching_device=default_caching_device)
+                                   regularizer=self.regularizer, caching_device=self.default_caching_device)
         self.W_u = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
                                    initializer="he_normal", name="W_u_p",
-                                   regularizer=self.regularizer, caching_device=default_caching_device)
+                                   regularizer=self.regularizer, caching_device=self.default_caching_device)
         self.W_r = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
                                    initializer="he_normal", name="W_r_p",
-                                   regularizer=self.regularizer, caching_device=default_caching_device)
+                                   regularizer=self.regularizer, caching_device=self.default_caching_device)
         self.W_c = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
                                    initializer="he_normal", name="W_c_p",
-                                   regularizer=self.regularizer, caching_device=default_caching_device)
+                                   regularizer=self.regularizer, caching_device=self.default_caching_device)
 
     def call(self, inputs, states, training, *args, **kwargs):
         x, a = tf.nest.flatten(inputs)
@@ -119,41 +133,51 @@ class NestedGRUGATCell(DropoutRNNCellMixin, l.Layer):
                   "return_attn_coef": self.return_attn_coef
                   }
         config.update(_config_for_enable_caching_device(self))
-        base_config = super(NestedGRUGATCell, self).get_config()
+        base_config = super().get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
 
-@tf.keras.utils.register_keras_serializable()
-class NestedGRUGATCellSingle(DropoutRNNCellMixin, l.Layer):
+@tf.keras.utils.register_keras_serializable(package="NestedRNN", name="NestedGRUGATCellSingle")
+class NestedGRUGATCellSingle(DropoutRNNCellMixin, tf.keras.__internal__.layers.BaseRandomLayer):
     def __init__(self,
-                 nodes,
-                 dropout,
-                 recurrent_dropout,
-                 hidden_size_out,
-                 activation,
-                 regularizer=None,
-                 layer_norm=False,
-                 gatv2=False,
-                 attn_heads=4,
-                 return_attn_coef=False,
+                 nodes: int,
+                 dropout: float,
+                 recurrent_dropout: float,
+                 attn_heads: int,
+                 channels: int,
                  concat_heads=False,
+                 add_bias=True,
+                 activation="relu",
+                 regularizer=None,
+                 return_attn_coef=False,
+                 layer_norm=False,
+                 initializer=init.glorot_normal,
+                 gatv2: bool = True,
+                 mincut: int = False,
                  **kwargs):
         super(NestedGRUGATCellSingle, self).__init__(**kwargs)
         self.tot_nodes = nodes
-        self.hidden_size_out = hidden_size_out
-        self.activation = activation
-        self.recurrent_dropout = recurrent_dropout
         self.dropout = dropout
+        self.recurrent_dropout = recurrent_dropout
+        self.attn_heads = attn_heads
+        self.hidden_size_out = channels
+        self.concat_heads = concat_heads
+        self.add_bias = add_bias
+        self.activation = activation
         self.regularizer = regularizer
-        self.layer_norm = layer_norm
         self.return_attn_coef = return_attn_coef
+        self.layer_norm = layer_norm
+        self.initializer = initializer
+        self.gatv2 = gatv2
+        self.mincut = mincut
         self.state_size = tf.TensorShape((self.tot_nodes, self.hidden_size_out))
+        if not self.mincut and self.return_attn_coef:
+            tf.compat.v1.logging.warning(
+                "Min-cut Loss cannot be computed without returning attention coefficients, set return_attn_coef to True"
+            )
         if return_attn_coef:
             self.output_size = [tf.TensorShape((self.tot_nodes, self.hidden_size_out)),
-                                tf.TensorShape((attn_heads, self.tot_nodes, self.tot_nodes)),
-                                tf.TensorShape((attn_heads, self.tot_nodes, self.tot_nodes)),
-                                tf.TensorShape((attn_heads, self.tot_nodes, self.tot_nodes))
-                                ]
+                                tf.TensorShape((attn_heads, self.tot_nodes, self.tot_nodes))]
         else:
             self.output_size = tf.TensorShape((self.tot_nodes, self.hidden_size_out))
 
@@ -167,8 +191,9 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, l.Layer):
             gat = GATv2Layer
         else:
             gat = GATConv
-        self.gnn = gat(channels=hidden_size_out, attn_heads=4, concat_heads=concat_heads, dropout_rate=0,
-                       activation=self.activation, return_attn_coef=return_attn_coef)
+        self.gnn = gat(channels=self.hidden_size_out, attn_heads=self.attn_heads, concat_heads=self.concat_heads,
+                       dropout_rate=0,
+                       activation=self.activation, return_attn_coef=self.return_attn_coef)
 
     def build(self, input_shape):
         x, a = input_shape
@@ -180,14 +205,19 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, l.Layer):
         self.b_c = self.add_weight(shape=(self.hidden_size_out,), initializer=init.zeros, name="b_c",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
         self.W_u = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
-                                   initializer="he_normal", name="W_u_p",
+                                   initializer=self.initializer, name="W_u_p",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
         self.W_r = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
-                                   initializer="he_normal", name="W_r_p",
+                                   initializer=self.initializer, name="W_r_p",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
         self.W_c = self.add_weight(shape=(self.hidden_size_out + x[-1], self.hidden_size_out),
-                                   initializer="he_normal", name="W_c_p",
+                                   initializer=self.initializer, name="W_c_p",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
+        if self.mincut:
+            self.W_mc = self.add_weight(shape=(self.hidden_size_out + x[-1], self.attn_heads, self.mincut),
+                                        initializer=self.initializer, name="W_c_p",
+                                        regularizer=self.regularizer, caching_device=default_caching_device)
+            self.mincut_loss = tf.TensorArray(tf.float32, 50, True)
 
     def call(self, inputs, states, training, *args, **kwargs):
         x, a = tf.nest.flatten(inputs)
@@ -195,14 +225,19 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, l.Layer):
         if 0 < self.recurrent_dropout < 1:
             h_mask = self.get_recurrent_dropout_mask_for_cell(inputs=h, training=training, count=1)
             h = h * h_mask
-        if 0 < self.dropout < 1:
-            x_mask = self.get_dropout_mask_for_cell(inputs=x, training=training, count=1)
-            x = x * x_mask
 
         if self.return_attn_coef:
             x_gat, attn = self.gnn([tf.concat([x, h], -1), a])
+            if self.mincut and training:
+                x_mc = tf.einsum("...nj,jho->...hno", tf.concat([x, h], -1), self.W_mc)
+                self.mincut_loss.write(tf.reduce_sum(min_cut(attn, x_mc, normalize=False)))
         else:
             x_gat = self.gnn([tf.concat([x, h], -1), a])
+
+        if 0 < self.dropout < 1:
+            x_mask = self.get_dropout_mask_for_cell(inputs=x_gat, training=training, count=1)
+            x_gat = x_gat * x_mask
+
         u = tf.nn.sigmoid(self.b_u + x_gat @ self.W_u)
         r = tf.nn.sigmoid(self.b_r + x_gat @ self.W_r)
         c = tf.concat([x, r * h], -1)
@@ -216,19 +251,30 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, l.Layer):
             return h_prime, h_prime
 
     def get_config(self):
-        config = {"tot_nodes": self.tot_nodes,
-                  "hidden_size_out": self.hidden_size_out,
+        config = {"nodes": self.tot_nodes,
                   "dropout": self.dropout,
                   "recurrent_dropout": self.recurrent_dropout,
+                  "attn_heads": self.attn_heads,
+                  "channels": self.hidden_size_out,
+                  "concat_heads": self.concat_heads,
+                  "add_bias": self.add_bias,
+                  "activation": self.activation,
                   "regularizer": self.regularizer,
+                  "return_attn_coef": self.return_attn_coef,
                   "layer_norm": self.layer_norm,
-                  "return_attn_coef": self.return_attn_coef
+                  "initializer": self.initializer,
+                  "gatv2": self.gatv2,
+                  "mincut": self.mincut
                   }
         config.update(_config_for_enable_caching_device(self))
-        base_config = super(NestedGRUGATCellSingle, self).get_config()
+        base_config = super().get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
+    def from_config(cls, config):
+        return cls(**config)
 
+
+@tf.keras.utils.register_keras_serializable(package="NestedRNN", name="NestedGRUAttentionCell")
 class NestedGRUAttentionCell(DropoutRNNCellMixin, l.Layer):
     def __init__(self,
                  nodes,
@@ -238,7 +284,9 @@ class NestedGRUAttentionCell(DropoutRNNCellMixin, l.Layer):
                  activation,
                  regularizer=None,
                  layer_norm=False,
+                 attn_heads=4,
                  concat_heads=False,
+                 return_attn_coef=False,
                  **kwargs):
         super(NestedGRUAttentionCell, self).__init__(**kwargs)
         self.tot_nodes = nodes
@@ -248,7 +296,9 @@ class NestedGRUAttentionCell(DropoutRNNCellMixin, l.Layer):
         self.dropout = dropout
         self.regularizer = regularizer
         self.layer_norm = layer_norm
-        self.state_size = tf.TensorShape((self.tot_nodes, self.hidden_size_out))
+        self.return_attn_coef = return_attn_coef
+        self.attn_heads = attn_heads
+        self.output_size = tf.TensorShape((self.tot_nodes, self.hidden_size_out))
         self.output_size = tf.TensorShape((self.tot_nodes, self.hidden_size_out))
         if self.layer_norm:
             self.ln = l.LayerNormalization()
@@ -257,11 +307,14 @@ class NestedGRUAttentionCell(DropoutRNNCellMixin, l.Layer):
         else:
             self._enable_caching_device = kwargs.pop('enable_caching_device', False)
 
-        self.gat_u = SelfAttention(channels=hidden_size_out, attn_heads=4, concat_heads=concat_heads, dropout_rate=0,
+        self.gat_u = SelfAttention(channels=hidden_size_out, attn_heads=attn_heads, concat_heads=concat_heads,
+                                   dropout_rate=0,
                                    activation=self.activation)
-        self.gat_r = SelfAttention(channels=hidden_size_out, attn_heads=4, concat_heads=concat_heads, dropout_rate=0,
+        self.gat_r = SelfAttention(channels=hidden_size_out, attn_heads=attn_heads, concat_heads=concat_heads,
+                                   dropout_rate=0,
                                    activation=self.activation)
-        self.gat_c = SelfAttention(channels=hidden_size_out, attn_heads=4, concat_heads=concat_heads, dropout_rate=0,
+        self.gat_c = SelfAttention(channels=hidden_size_out, attn_heads=attn_heads, concat_heads=concat_heads,
+                                   dropout_rate=0,
                                    activation=self.activation)
 
     def build(self, input_shape):
@@ -304,10 +357,11 @@ class NestedGRUAttentionCell(DropoutRNNCellMixin, l.Layer):
                   "hidden_size_out": self.hidden_size_out,
                   "dropout": self.dropout,
                   "recurrent_dropout": self.recurrent_dropout,
-                  "regularizer": self.regularizer
+                  "regularizer": self.regularizer,
+                  "attn_heads": self.attn_heads
                   }
         config.update(_config_for_enable_caching_device(self))
-        base_config = super(NestedGRUGATCell, self).get_config()
+        base_config = super(NestedGRUAttentionCell, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
 
@@ -433,7 +487,7 @@ class SelfAttention(l.Layer):
     def call(self, inputs, mask, *args, **kwargs):
         """
         query=key=value:
-            - n: nodes if time series or batch size
+            - n: nodes V batch size
             - t: time dim if time series or number of nodes if n=batch size
             - d: input embedding dimension
             - o: output embedding dimension
@@ -468,6 +522,7 @@ class SelfAttention(l.Layer):
         return x_prime
 
 
+@tf.keras.utils.register_keras_serializable(package="GNN", name="GATv2Layer")
 class GATv2Layer(l.Layer):
     def __init__(self,
                  attn_heads,
@@ -475,26 +530,28 @@ class GATv2Layer(l.Layer):
                  concat_heads=False,
                  add_bias=True,
                  activation="relu",
-                 dropout_rate=0.2,
+                 dropout_rate=0,
                  residual=False,
                  initializer=init.glorot_normal,
                  regularizer=None,
                  return_attn_coef=False,
                  **kwargs):
-        super(GATv2Layer, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.heads = attn_heads
         self.channels = channels
         self.concatenate_output = concat_heads
         self.add_bias = add_bias
-        self.activation = activation
+        self.activation = act.get(activation)
         self.residual = residual
-        self.initializer = initializer
-        self.regularizer = regularizer
+        self.initializer = init.get(initializer)
+        self.regularizer = regu.get(regularizer)
         self.return_attention = return_attn_coef
-        self.dropout_rate = dropout_rate
+        self.dropout = dropout_rate
         self.dropout_attn = l.Dropout(dropout_rate)
+        self.dropout_feat = l.Dropout(dropout_rate)
 
     def build(self, input_shape):
+        caching_device = _caching_device(self)
         x, a = input_shape
         self.w_shape = (self.heads, self.channels, self.channels)
         self.attn_shape = (self.heads, self.channels)
@@ -502,27 +559,32 @@ class GATv2Layer(l.Layer):
                                       shape=self.w_shape,
                                       initializer=self.initializer,
                                       regularizer=self.regularizer,
-                                      trainable=True
-                                      )
+                                      trainable=True,
+                                      caching_device=caching_device)
         self.W_ngb = self.add_weight(name=f"kern_features_ngb",
                                      shape=self.w_shape,
                                      initializer=self.initializer,
                                      regularizer=self.regularizer,
-                                     trainable=True
+                                     trainable=True,
+                                     caching_device=caching_device
                                      )
         self.attn = self.add_weight(name=f"kern_attention",
                                     shape=self.attn_shape,
                                     initializer=self.initializer,
                                     regularizer=self.regularizer,
-                                    trainable=True
+                                    trainable=True,
+                                    caching_device=caching_device
                                     )
         self.kernel = self.add_weight(name="kernel_feature",
-                                      shape=(x[-1], self.channels))
+                                      shape=(x[-1], self.channels),
+                                      caching_device=caching_device)
         if self.add_bias:
             self.bias = self.add_weight(name="kern_bias",
-                                        shape=(1, *self.attn_shape))
+                                        shape=(1, *self.attn_shape),
+                                        caching_device=caching_device)
             self.bias0 = self.add_weight(name="kern_bias_i",
-                                         shape=(self.channels,))
+                                         shape=(self.channels,),
+                                         caching_device=caching_device)
 
     def call(self, inputs, training=None, mask=None):
         '''
@@ -539,6 +601,8 @@ class GATv2Layer(l.Layer):
         if self.add_bias:
             x = x + self.bias0
         x = act.get(self.activation)(x)
+        if self.dropout > 0:
+            x = self.dropout_feat(x)
 
         if isinstance(a, tf.sparse.SparseTensor):
             tf.assert_rank(a, 2)
@@ -551,10 +615,11 @@ class GATv2Layer(l.Layer):
             x_ij_prime = x_i + x_j  # EHO
             if self.add_bias:
                 x_ij_prime = x_ij_prime + self.bias
-            x_ij_prime = act.get(self.activation)(x_ij_prime)
+            x_ij_prime = self.activation(x_ij_prime)
             a_ij = tf.einsum("EHO,HO->EH", x_ij_prime, self.attn)
             a_soft_ij = unsorted_segment_softmax(a_ij, j, N)
-            a_soft_ij = self.dropout_attn(a_soft_ij)
+            if 0 < self.dropout < 1:
+                a_soft_ij = self.dropout_attn(a_soft_ij)
             out = a_soft_ij[..., None] * x_i[:, None]  # EH
             out = tf.math.unsorted_segment_sum(out, j, N)  # NHF
             if self.concatenate_output:
@@ -571,12 +636,13 @@ class GATv2Layer(l.Layer):
             x_ij = x_i[..., None, :] + x_j[..., None]  # BHONN
             if self.add_bias:
                 x_ij = x_ij + self.bias[:, :, :, None, None]
-            x_ij_activated = act.get(self.activation)(x_ij)
+            x_ij_activated = self.activation(x_ij)
             e_ij = tf.einsum("...HONK,HO->...HNK", x_ij_activated, self.attn)
             a_mask = tf.where(a == 0, -10e9, 0.0)
             a_mask = tf.repeat(a_mask[:, None, ...], self.heads, 1)  # BHNN
             a_soft_ij = tf.nn.softmax(a_mask + e_ij)
-            a_soft_ij = self.dropout_attn(a_soft_ij)
+            if 0 < self.dropout < 1:
+                a_soft_ij = self.dropout_attn(a_soft_ij)
             x_prime = tf.einsum("...HNK,...NF->...KHF", a_soft_ij, x)
             if self.concatenate_output:
                 out = tf.reshape(x_prime, (*x.shape[:2], self.heads * x.shape[-1]))  # BxNx(FH)
@@ -588,17 +654,16 @@ class GATv2Layer(l.Layer):
                 return out
 
     def get_config(self):
-        config = {"heads": self.heads,
+        config = {"attn_heads": self.heads,
                   "channels": self.channels,
-                  "concatenate_output": self.concatenate_output,
+                  "concat_heads": self.concatenate_output,
                   "add_bias": self.add_bias,
-                  "activation": self.activation,
+                  "activation": act.serialize(self.activation),
+                  "dropout_rate": self.dropout,
                   "residual": self.residual,
-                  "initializer": self.initializer,
-                  "regularizer": self.regularizer,
-                  "return_attention": self.return_attention,
-                  "dropout_rate": self.dropout_rate,
+                  "initializer": init.serialize(self.initializer),
+                  "regularizer": regu.serialize(self.regularizer),
+                  "return_attn_coef": self.return_attention
                   }
-        config.update(_config_for_enable_caching_device(self))
-        base_config = super(GATv2Layer, self).get_config()
+        base_config = super().get_config()
         return dict(list(base_config.items()) + list(config.items()))
