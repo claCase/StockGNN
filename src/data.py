@@ -1,9 +1,10 @@
 import pandas as pd
 import numpy as np
 import os
-import exchange_calendars as excal
+import exchange_calendars as xcals
 import datetime
 import tensorflow as tf
+import datetime
 
 Sequence = tf.keras.utils.Sequence
 
@@ -61,24 +62,80 @@ def df_to_matrix(df: pd.DataFrame, save_path=None) -> (np.array, ({})):
     return matrix, maps
 
 
-class TimeSeries:
-    def __init__(self, series: pd.DataFrame):
-        self.series = series
-        self.index = series.index
-
-    def slice(self, start, end):
-        raise NotImplementedError()
-
-
-class FinancialTimeSeries(TimeSeries):
-    def __len__(self, stock_exchange, **kwargs):
-        super().__init__(**kwargs)
+class StockTimeSeries:
+    def __init__(self, data, stock_exchange: str):
+        if stock_exchange not in self.available_exchanges:
+            raise ValueError(f"Exchange {stock_exchange} not in {self.available_exchanges}")
+        self.data = data
         self.stock_exchange = stock_exchange
+        self.calendar = xcals.get_calendar(self.stock_exchange)
+        self.check_series_index()
 
-    def check_business_days(self,
-                            start: datetime.datetime,
-                            end: datetime.datetime = None):
-        pass
+    def is_business_day(self, start: datetime.datetime, end: datetime.datetime):
+        dataslice = self.__getitem__(slice(start, end)).data
+        if self.is_multiindex:
+            index = pd.DatetimeIndex(np.asarray(dataslice.index.to_list())[:, 0])
+        else:
+            index = dataslice.index
+        cal = self.calendar.sessions_in_range(index.min(), index.max())
+        check = index.isin(cal)
+        return check
+
+    def remove_non_business_days(self, start=None, end=None, inplace=False):
+        new_data = self.__getitem__(slice(start, end)).data.iloc[self.is_business_day(start, end)]
+        if inplace:
+            self.data = new_data
+        else:
+            return StockTimeSeries(new_data, self.stock_exchange)
+
+    def __getitem__(self, item):
+        if self.is_multiindex:
+            datetime_index = np.asarray(self.data.index.to_list())[:, 0]
+        else:
+            datetime_index = self.data.index
+        if isinstance(item, slice):
+            i, j = item.start, item.stop
+            if i is None:
+                i = datetime_index.min()
+            if j is None:
+                j = datetime_index.max()
+            if i > j:
+                raise ValueError(f"Start {i} of sequence cannot be greater than End {j}")
+            data = self.data.iloc[(i <= datetime_index) & (datetime_index <= j)]
+        elif isinstance(item, pd.DatetimeIndex):
+            data = self.data.iloc[datetime_index == item]
+        elif isinstance(item, int):
+            data = self.data.iloc[item]
+        else:
+            raise TypeError(f"Type {type(item)} not supported for indexing")
+        return StockTimeSeries(data, self.stock_exchange)
+
+    def __repr__(self):
+        return self.data.head(n=np.minimum(len(self.data), 50)).to_string()
+
+    @property
+    def available_exchanges(self):
+        return xcals.get_calendar_names(include_aliases=False)
+
+    def __len__(self):
+        return len(self.data.index)
+
+    def check_series_index(self):
+        if isinstance(self.data.index, pd.MultiIndex):
+            datetime_index = self.data.index.levels[0]
+            assert isinstance(datetime_index, pd.DatetimeIndex)
+            self.stocks = list(self.data.index.levels[1]).sort()
+            self.is_multiindex = True
+        else:
+            assert isinstance(self.data.index, pd.DatetimeIndex)
+            self.is_multiindex = False
+            self.stocks = None
+
+    def to_matrix(self, save_path):
+        if self.is_multiindex:
+            df_to_matrix(self.data, save_path)
+        else:
+            raise TypeError("Only Multiindex can be converted to dense matrix")
 
 
 class TimeSeriesBatchGenerator(Sequence):
