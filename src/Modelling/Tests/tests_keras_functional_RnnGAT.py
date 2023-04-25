@@ -2,7 +2,6 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
 from src.models import build_RNNGAT
-from src.losses import custom_mse
 from src import data
 import argparse
 import os

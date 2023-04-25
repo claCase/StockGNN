@@ -84,7 +84,6 @@ class RNNGAT(m.Model):
                  stateful=False,
                  unroll=False,
                  time_major=False,
-                 mincut=False,
                  **kwargs):
         super().__init__(**kwargs)
         self.loss_tracker = tf.keras.metrics.Mean(name="loss")
@@ -111,7 +110,6 @@ class RNNGAT(m.Model):
         self.time_major = time_major
         self.single_gnn = single_gnn
         self.out_channels = out_channels
-        self.mincut = mincut
 
     def build(self, input_shape):
         x, a = input_shape
@@ -130,8 +128,7 @@ class RNNGAT(m.Model):
                 return_attn_coef=self.return_attn_coef,
                 layer_norm=self.layer_norm,
                 initializer=self.initializer,
-                gatv2=self.gatv2,
-                mincut=self.mincut
+                gatv2=self.gatv2
             )
         else:
             rnn_cell = NestedGRUGATCell(nodes=self.nodes,
@@ -177,8 +174,6 @@ class RNNGAT(m.Model):
         with tf.GradientTape() as tape:
             o, y_pred = self(x, training=True)
             l = self.compute_loss(y=y, y_pred=y_pred)
-            if self.mincut:
-                l += tf.reduce_sum(self.rnn.cell.mincut_loss)
         grads = tape.gradient(l, self.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
         self.loss_tracker.update_state(l)

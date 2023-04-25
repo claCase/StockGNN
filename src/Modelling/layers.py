@@ -153,7 +153,6 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, tf.keras.__internal__.layers.B
                  layer_norm=False,
                  initializer=init.glorot_normal,
                  gatv2: bool = True,
-                 mincut: int = False,
                  **kwargs):
         super(NestedGRUGATCellSingle, self).__init__(**kwargs)
         self.tot_nodes = nodes
@@ -169,7 +168,6 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, tf.keras.__internal__.layers.B
         self.layer_norm = layer_norm
         self.initializer = initializer
         self.gatv2 = gatv2
-        self.mincut = mincut
         self.state_size = tf.TensorShape((self.tot_nodes, self.hidden_size_out))
         if not self.mincut and self.return_attn_coef:
             tf.compat.v1.logging.warning(
@@ -228,9 +226,6 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, tf.keras.__internal__.layers.B
 
         if self.return_attn_coef:
             x_gat, attn = self.gnn([tf.concat([x, h], -1), a])
-            if self.mincut and training:
-                x_mc = tf.einsum("...nj,jho->...hno", tf.concat([x, h], -1), self.W_mc)
-                self.mincut_loss.write(tf.reduce_sum(min_cut(attn, x_mc, normalize=False)))
         else:
             x_gat = self.gnn([tf.concat([x, h], -1), a])
 
@@ -263,8 +258,7 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, tf.keras.__internal__.layers.B
                   "return_attn_coef": self.return_attn_coef,
                   "layer_norm": self.layer_norm,
                   "initializer": self.initializer,
-                  "gatv2": self.gatv2,
-                  "mincut": self.mincut
+                  "gatv2": self.gatv2
                   }
         config.update(_config_for_enable_caching_device(self))
         base_config = super().get_config()
@@ -547,8 +541,9 @@ class GATv2Layer(l.Layer):
         self.regularizer = regu.get(regularizer)
         self.return_attention = return_attn_coef
         self.dropout = dropout_rate
-        self.dropout_attn = l.Dropout(dropout_rate)
-        self.dropout_feat = l.Dropout(dropout_rate)
+        if dropout_rate:
+            self.dropout_attn = l.Dropout(dropout_rate)
+            self.dropout_feat = l.Dropout(dropout_rate)
 
     def build(self, input_shape):
         caching_device = _caching_device(self)
