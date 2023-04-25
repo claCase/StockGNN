@@ -3,7 +3,6 @@ from tensorflow.python.keras.layers.recurrent import DropoutRNNCellMixin, _confi
     _caching_device
 from spektral.layers import GATConv
 from spektral.layers.ops import unsorted_segment_softmax
-from src.losses import min_cut
 
 l = tf.keras.layers
 act = tf.keras.activations

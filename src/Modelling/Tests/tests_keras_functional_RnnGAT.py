@@ -1,12 +1,12 @@
 import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
-from src.models import build_RNNGAT
+from src.Modelling.models import build_RNNGAT
 from src import data
 import argparse
 import os
 import pickle as pkl
-from src.utils import train, diff_log
+from src.Modelling.utils import train, diff_log
 
 
 def main(gpu=True,
@@ -14,7 +14,7 @@ def main(gpu=True,
          save=False,
          show=True
          ):
-    tickers_path = os.path.join(os.getcwd(), "../../data", "Tickers")
+    tickers_path = os.path.join(os.getcwd(), "../../../data", "Tickers")
     if gpu:
         physical_devices = tf.config.list_physical_devices('GPU')
         try:
@@ -26,7 +26,7 @@ def main(gpu=True,
         physical_devices = tf.config.list_physical_devices('CPU')
         tf.config.set_visible_devices(physical_devices)
 
-    processed = os.path.join(os.getcwd(), "../../data", "Processed")
+    processed = os.path.join(os.getcwd(), "../../../data", "Processed")
     if not os.path.exists(os.path.join(processed, "time_series_matrix.npy")):
         df = data.tickers_df(tickers_path)
         df.to_csv(os.path.join(processed, "df.csv"))
@@ -58,7 +58,7 @@ def main(gpu=True,
     t1 = 60
     dt = 60
 
-    profiler_dir = os.path.join(os.getcwd(), "../../Analysis")
+    profiler_dir = os.path.join(os.getcwd(), "../../../Analysis")
     options = tf.profiler.experimental.ProfilerOptions(host_tracer_level=3,
                                                        python_tracer_level=1,
                                                        device_tracer_level=1)

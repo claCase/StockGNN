@@ -1,12 +1,14 @@
-from src import models, data, losses
+from src import data
+from src.Modelling import models, losses
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
-from src.utils import diff_log
+from src.Modelling.utils import diff_log
+import tensorflow as tf
 
 
 def main(seq_len=110, len_train=110, len_test=500, epochs=200):
-    x = np.load("../../data/Processed/time_series_matrix.npy")
+    x = np.load("../../../data/Processed/time_series_matrix.npy")
     N = x.shape[1]
     x_diff = diff_log(x)
     x_diff = np.maximum(np.minimum(x_diff, 1), -1)
@@ -45,9 +47,23 @@ if __name__ == "__main__":
     parser.add_argument("--seq_len", type=int, default=110)
     parser.add_argument("--len_train", type=int, default=300)
     parser.add_argument("--len_test", type=int, default=300)
+    parser.add_argument("--gpu", action="store_true")
     args = parser.parse_args()
     epochs = args.epochs
     seq_len = args.seq_len
     len_train = args.len_train
     len_test = args.len_test
+    gpu = args.gpu
+
+    if gpu:
+        physical_devices = tf.config.list_physical_devices('GPU')
+        try:
+            print(physical_devices[0])
+            tf.config.experimental.set_memory_growth(physical_devices[0], True)
+        except Exception as e:
+            raise e
+    else:
+        physical_devices = tf.config.list_physical_devices('CPU')
+        tf.config.set_visible_devices(physical_devices)
+
     main(seq_len, len_train, len_test, epochs)

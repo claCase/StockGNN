@@ -1,6 +1,6 @@
 import tensorflow as tf
-from src.layers import NestedGRUGATCell, NestedGRUAttentionCell, NestedGRUGATCellSingle, GATv2Layer
-from src.losses import custom_mse, min_cut
+from src.Modelling.layers import NestedGRUGATCell, NestedGRUAttentionCell, NestedGRUGATCellSingle, GATv2Layer
+from src.Modelling.losses import custom_mse
 
 # from src.losses import custom_mse
 

@@ -1,5 +1,5 @@
 import tensorflow as tf
-from src.utils import normalize_adj, node_degree
+from src.Modelling.utils import normalize_adj, node_degree
 
 klos = tf.keras.losses
 
