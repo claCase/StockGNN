@@ -1,32 +1,25 @@
 from abc import ABC, ABCMeta, abstractclassmethod, abstractmethod
 from events import Event
 import queue as q
-from data_handlers import DataHandler
+from data_handlers import DataHandler, GatherStore
 
 
-class Symbol(ABC):
+class Symbol(ABC, GatherStore):
     def __init__(self, name):
+        super().__init__()
         self._name = name
-        self._events: dict[q.Queue] = {}
-        self._data_aggregators = []
+        self.latest_data = None
 
     @property
     def name(self):
         return self._name
 
-    def add_event(self, event: Event) -> None:
-        try:
-            self._events[event.type].put(event)
-        except:
-            self._events[event.type] = q.Queue()
-            self._events[event.type].put(event)
+    def emit(self, type):
+        for handler_type in self._data_handlers.keys():
+            for handler_name in self._data_handlers[handler_type].keys():
+                latest_handler_data = self._data_handlers[handler_type][handler_name].get
+                return self._events[type].get()
 
-    def get_event(self, type):
-        return self._events[type].get()
-
-    def add_data_aggergator(self, aggregator: DataHandler):
-        self._data_aggregators.append(aggregator)
-
-    @abstractmethod
-    def aggregate_data(self):
-        raise NotImplementedError("Implement Logic for aggregating data")
+    @property
+    def events_type(self):
+        return set(self._events.keys())

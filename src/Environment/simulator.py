@@ -4,6 +4,7 @@ from abc import ABC, ABCMeta, abstractmethod
 from events import OrderEvent, FillEvent
 from exchanges import Exchange
 from datetime import time, datetime, timedelta
+from strategy import Strategy
 
 
 class Simulator(ABC):
@@ -11,12 +12,17 @@ class Simulator(ABC):
         self._name = name
         self._exchanges: {str: Exchange} = {}
         self._update_frequency = update_frequency
-        self._strategy = None
+        self._strategy: Strategy = None
         self._clock = None
 
     @abstractmethod
     def step(self):
-        raise NotImplementedError("Implement Step Function")
+        latest_data = {name: {} for name in self.exchanges}
+        for exchange in self._exchanges:
+            for symbol in exchange.symbols:
+                latest_data[exchange.name][symbol] = symbol.aggregate_data()
+
+        orders = self._strategy.get_orders()
 
     def execute_orders(self, order_events: [OrderEvent]) -> {str: [FillEvent]}:
         for order in order_events:
@@ -33,7 +39,7 @@ class Simulator(ABC):
     def get_exchange(self, name: str) -> Exchange:
         return self._exchanges[name]
 
-    def get_latest_data(self):
+    def get_latest_symbol_data(self):
         for exchange in self._exchanges:
             for symbol in exchange.symbols:
                 symbol.aggregate_data()
@@ -46,3 +52,9 @@ class Simulator(ABC):
     @property
     def exchanges(self):
         return [exchange.name for exchange in self._exchanges]
+
+    def set_strategy(self, strategy: Strategy):
+        self._strategy = strategy
+
+    def get_strategy(self):
+        return self._strategy

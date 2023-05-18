@@ -3,13 +3,14 @@ import exchange_calendars as xcals
 from symbols import Symbol
 from events import OrderEvent, FillEvent
 from queue import Queue
+from data_handlers import DataHandler
 
 
 class Exchange(ABC):
     def __init__(self, name):
         self._name = name
         self._symbols = {}
-        self._order_queue = Queue()
+        self._order_queue: DataHandler = DataHandler()
 
     @property
     def name(self):
@@ -24,7 +25,7 @@ class Exchange(ABC):
 
     def put_orders(self, orders: [OrderEvent]) -> None:
         for order in orders:
-            self._order_queue.put(order)
+            self._order_queue.store_data(order)
 
     def put_order(self, order: OrderEvent) -> None:
         self._order_queue.put(order)
