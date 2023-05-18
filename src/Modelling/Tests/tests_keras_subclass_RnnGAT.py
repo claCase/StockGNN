@@ -1,4 +1,4 @@
-from src import data
+from src.Data import data
 from src.Modelling import models, losses
 import numpy as np
 import argparse

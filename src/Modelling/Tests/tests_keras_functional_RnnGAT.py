@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
 from src.Modelling.models import build_RNNGAT
-from src import data
+from src.Data import data
 import argparse
 import os
 import pickle as pkl
@@ -37,7 +37,7 @@ def main(gpu=True,
     else:
         matrix = np.load(os.path.join(processed, "time_series_matrix.npy"))
         with open(os.path.join(processed, "mappings.pkl"), "rb") as file:
-            maping = pkl.load(file)
+            mapping = pkl.load(file)
     diff_matrix = diff_log(matrix)
 
     kwargs_cell = {"dropout": 0.01,
