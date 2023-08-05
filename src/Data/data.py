@@ -8,7 +8,8 @@ import datetime
 
 Sequence = tf.keras.utils.Sequence
 
-tickers_path = os.path.join(os.getcwd(), "..", "data", "Tickers")
+tickers_path = os.path.join(os.getcwd(), "../..", "data", "Tickers")
+
 
 
 def tickers_df(data_path, save_path=None) -> pd.DataFrame:
