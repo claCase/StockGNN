@@ -1,4 +1,4 @@
-from src.Tests import tests_keras_functional_RnnGAT, tests_keras_subclass_RnnGAT
+from src.Modelling.Tests import tests_keras_functional_RnnGAT, tests_keras_subclass_RnnGAT
 import argparse
 
 

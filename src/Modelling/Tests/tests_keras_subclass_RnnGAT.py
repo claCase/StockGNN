@@ -8,7 +8,7 @@ import tensorflow as tf
 
 
 def main(seq_len=110, len_train=110, len_test=500, epochs=200):
-    x = np.load("../../../data/Processed/time_series_matrix.npy")
+    x = np.load("../../../data/Processed/time_series_matrix_reduced.npy")
     N = x.shape[1]
     x_diff = diff_log(x)
     x_diff = np.maximum(np.minimum(x_diff, 1), -1)

@@ -27,7 +27,7 @@ def main(gpu=True,
         tf.config.set_visible_devices(physical_devices)
 
     processed = os.path.join(os.getcwd(), "../../../data", "Processed")
-    if not os.path.exists(os.path.join(processed, "time_series_matrix.npy")):
+    if not os.path.exists(os.path.join(processed, "time_series_matrix_reduced.npy")):
         df = data.tickers_df(tickers_path)
         df.to_csv(os.path.join(processed, "df.csv"))
         matrix, mapping = data.df_to_matrix(df)
