@@ -1,15 +1,15 @@
+from typing import Optional, List
 import pandas as pd
 import numpy as np
 import os
 import exchange_calendars as xcals
-import datetime
 import tensorflow as tf
 import datetime
+import string
 
 Sequence = tf.keras.utils.Sequence
 
 tickers_path = os.path.join(os.getcwd(), "../..", "data", "Tickers")
-
 
 
 def tickers_df(data_path, save_path=None) -> pd.DataFrame:
@@ -59,8 +59,40 @@ def df_to_matrix(df: pd.DataFrame, save_path=None) -> (np.array, ({})):
         matrix[(*np_ids, None)] = r[1:]
 
     if save_path:
-        np.save(save_path, matrix)
+        np.save(os.path.join(save_path, "matrix.npy"), matrix)
+        np.save(os.path.join(save_path, "unique_index_mapping.npy"), unique_idx)
     return matrix, maps
+
+
+def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[np.ndarray]] = None):
+    if index_mapping is None:
+        start_date = datetime.date.fromisoformat("2000-01-01")
+        end_date = start_date + datetime.timedelta(days=matrix.shape[0]-1)
+        stock_names = []
+        counter = 0
+        for first in range(52):
+            for second in range(52):
+                for third in range(52):
+                    stock_names.append(first + second + third)
+                    counter += 1
+                    if counter == matrix.shape[1]:
+                        break
+                else:
+                    continue
+                break
+            else:
+                continue
+            break
+
+    else:
+        start_date = index_mapping[0].min()
+        end_date = index_mapping[0].max()
+        stock_names = index_mapping[1]
+
+    time_index = pd.date_range(start_date, end_date)
+    multiindex = pd.MultiIndex.from_product([time_index, stock_names], names=["time", "stock"])
+    df = pd.DataFrame(matrix.reshape(-1, 5), index=multiindex, columns=[string.ascii_letters[i] for i in range(5)])
+    return df
 
 
 class StockTimeSeries:
@@ -73,11 +105,11 @@ class StockTimeSeries:
         self.check_series_index()
 
     def is_business_day(self, start: datetime.datetime, end: datetime.datetime):
-        dataslice = self.__getitem__(slice(start, end)).data
-        if self.is_multiindex:
-            index = pd.DatetimeIndex(np.asarray(dataslice.index.to_list())[:, 0])
+        data_slice = self.__getitem__(slice(start, end)).data
+        if self._is_multiindex:
+            index = pd.DatetimeIndex(np.asarray(data_slice.index.to_list())[:, 0])
         else:
-            index = dataslice.index
+            index = data_slice.index
         cal = self.calendar.sessions_in_range(index.min(), index.max())
         check = index.isin(cal)
         return check
@@ -98,7 +130,7 @@ class StockTimeSeries:
             return StockTimeSeries(new_data, self.stock_exchange)
 
     def __getitem__(self, item):
-        if self.is_multiindex:
+        if self._is_multiindex:
             datetime_index = np.asarray(self.data.index.to_list())[:, 0]
         else:
             datetime_index = self.data.index
@@ -134,14 +166,14 @@ class StockTimeSeries:
             datetime_index = self.data.index.levels[0]
             assert isinstance(datetime_index, pd.DatetimeIndex)
             self.stocks = list(self.data.index.levels[1]).sort()
-            self.is_multiindex = True
+            self._is_multiindex = True
         else:
             assert isinstance(self.data.index, pd.DatetimeIndex)
-            self.is_multiindex = False
+            self._is_multiindex = False
             self.stocks = None
 
     def to_matrix(self, save_path) -> (np.array, {}):
-        if self.is_multiindex:
+        if self._is_multiindex:
             return df_to_matrix(self.data, save_path)
         else:
             raise TypeError("Only MultiIndex can be converted to dense matrix")
