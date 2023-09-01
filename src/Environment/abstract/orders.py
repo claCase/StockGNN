@@ -73,7 +73,7 @@ class OrderState:
 
     def update(self, fillEvent: FillEvent):
         self._fills.append(fillEvent)
-        if fillEvent.type == "FUFILLED":
+        if fillEvent.type == "FULFILLED":
             self._endReqTime = datetime.now()
 
     @property

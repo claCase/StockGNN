@@ -1,12 +1,16 @@
+from typing import Mapping
 import numpy as np
 import pandas as pd
 from abc import ABC, ABCMeta, abstractmethod
-from events import OrderEvent, FillEvent
-from exchanges import Exchange
+from src.Environment.abstract.orders import OrderEvent, FillEvent
+from src.Environment.abstract.data_handlers import DataHandler
+from src.Environment.abstract.events import Event
+from src.Environment.abstract.exchanges import Exchange
 from datetime import time, datetime, timedelta
-from strategy import Strategy
-from typing import Mapping
-from symbols import Symbol
+from src.Environment.abstract.strategy import Strategy
+from src.Environment.abstract.symbols import Symbol
+import asyncio
+from asyncio.queues import Queue
 
 
 class Simulator(ABC):
@@ -17,6 +21,8 @@ class Simulator(ABC):
         self._strategy: Strategy = None
         self._clock = None
         self.latest_data: Mapping[str: Symbol]
+        self._event_queue: Queue[Event] = Queue()
+        self._event_handler_mapping: Mapping[str:Mapping[str:]]
 
     @abstractmethod
     def step(self, order_events: [OrderEvent]):

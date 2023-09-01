@@ -26,8 +26,13 @@ class Stock(Contract):
 
 
 class Option(Contract):
-    def __init__(self):
+    def __init__(self, strike):
         super().__init__(type="OPT")
+        self._strike = strike
+
+    @property
+    def strike(self):
+        return self._strike
 
 
 class Futures(Contract):
@@ -36,10 +41,11 @@ class Futures(Contract):
 
 
 class Forex(Contract):
-    def __init__(self, curr1:str, curr2:str):
+    def __init__(self, curr1: str, curr2: str):
         super().__init__(type="FOX")
         self._currency1 = curr1
         self._currency2 = curr2
+
     @property
     def currency1(self) -> str:
         return self._currency1

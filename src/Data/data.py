@@ -31,13 +31,17 @@ def tickers_df(data_path, save_path=None) -> pd.DataFrame:
             tot_df = df
         else:
             tot_df = pd.concat([tot_df, df], axis=0, ignore_index=True)
-
-    tot_df = tot_df.set_index([pd.DatetimeIndex(tot_df["datetime"]), "ticker"])
-    tot_df.drop("datetime", axis=1, inplace=True)
-    tot_df.sort_index(inplace=True)
+    tot_df = to_multiindex(tot_df)
     if save_path is not None:
         print(f"Saving Dataframe to: {save_path}")
         tot_df.to_csv(save_path)
+    return tot_df
+
+
+def to_multiindex(df: pd.DataFrame):
+    tot_df = df.set_index([pd.DatetimeIndex(df["datetime"]), "ticker"])
+    tot_df.drop("datetime", axis=1, inplace=True)
+    tot_df.sort_index(inplace=True)
     return tot_df
 
 
@@ -64,10 +68,10 @@ def df_to_matrix(df: pd.DataFrame, save_path=None) -> (np.array, ({})):
     return matrix, maps
 
 
-def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[np.ndarray]] = None):
+def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[np.ndarray]] = None, **kwargs):
     if index_mapping is None:
         start_date = datetime.date.fromisoformat("2000-01-01")
-        end_date = start_date + datetime.timedelta(days=matrix.shape[0]-1)
+        end_date = start_date + datetime.timedelta(days=matrix.shape[0] - 1)
         stock_names = []
         counter = 0
         for first in range(52):
@@ -89,14 +93,15 @@ def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[np.ndarray]] =
         end_date = index_mapping[0].max()
         stock_names = index_mapping[1]
 
-    time_index = pd.date_range(start_date, end_date)
+    time_index = pd.date_range(start_date, end_date, **kwargs)
+    assert time_index.shape == matrix.shape[0]
     multiindex = pd.MultiIndex.from_product([time_index, stock_names], names=["time", "stock"])
     df = pd.DataFrame(matrix.reshape(-1, 5), index=multiindex, columns=[string.ascii_letters[i] for i in range(5)])
     return df
 
 
 class StockTimeSeries:
-    def __init__(self, data, stock_exchange: str):
+    def __init__(self, data: pd.DataFrame, stock_exchange: str):
         if stock_exchange not in self.available_exchanges:
             raise ValueError(f"Exchange {stock_exchange} not in {self.available_exchanges}")
         self.data = data
@@ -181,8 +186,8 @@ class StockTimeSeries:
 
 class TimeSeriesBatchGenerator(Sequence):
     '''
-    Used in conjunction with stateful rnn to keep the previous batch ending hidden state. It returns batches of time slices
-    of the time series. The batches are not randomly shuffled to preserve the time order of the time series
+    Used in conjunction with stateful rnn to keep the previous batch ending hidden state. It returns batches of time
+    slices of the time series. The batches are not randomly shuffled to preserve the time order of the time series
     args:
     x: features time series TxNxf or nested tensor (tuple) of feature time series and adj matrix of shape (TxNxf, TxNxN)
     y: time series targets of shape TxNxf2
