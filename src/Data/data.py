@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict
 import pandas as pd
 import numpy as np
 import os
@@ -15,8 +15,8 @@ tickers_path = os.path.join(os.getcwd(), "../..", "data", "Tickers")
 def tickers_df(data_path, save_path=None) -> pd.DataFrame:
     try:
         (dir, folders, files) = next(os.walk(data_path))
-    except StopIteration:
-        raise StopIteration("No more suggesstions.")
+    except StopIteration as si:
+        raise si("No more suggestions, maybe the path does not contain csv files")
 
     tickers_name = [tick[:-4] for tick in files]
     tot_df = None
@@ -68,10 +68,8 @@ def df_to_matrix(df: pd.DataFrame, save_path=None) -> (np.array, ({})):
     return matrix, maps
 
 
-def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[np.ndarray]] = None, **kwargs):
-    if index_mapping is None:
-        start_date = datetime.date.fromisoformat("2000-01-01")
-        end_date = start_date + datetime.timedelta(days=matrix.shape[0] - 1)
+def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[Dict]] = None, **kwargs):
+    def generate_names():
         stock_names = []
         counter = 0
         for first in range(52):
@@ -80,23 +78,30 @@ def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[np.ndarray]] =
                     stock_names.append(first + second + third)
                     counter += 1
                     if counter == matrix.shape[1]:
-                        break
-                else:
-                    continue
-                break
-            else:
-                continue
-            break
+                        return stock_names
 
+    sparse_matrix = tf.sparse.from_dense(matrix)
+    idx = sparse_matrix.indices.numpy()
+    column_names = [string.ascii_letters[i] for i in range(matrix.shape[-1])]
+    columns = [column_names[i[-1]] for i in idx]
+    if index_mapping is not None:
+        idx2time = dict(zip(index_mapping[0].values(), index_mapping[0].keys()))
+        idx2stock = dict(zip(index_mapping[1].values(), index_mapping[1].keys()))
+        times = [idx2time[i[0]] for i in idx]
+        stocks = [idx2stock[i[1]] for i in idx]
     else:
-        start_date = index_mapping[0].min()
-        end_date = index_mapping[0].max()
-        stock_names = index_mapping[1]
+        start_date = datetime.date.fromisoformat("2000-01-01")
+        end_date = start_date + datetime.timedelta(days=matrix.shape[0] - 1)
+        time_range = pd.date_range(start_date, end_date, **kwargs)
+        times = [time_range[i[0]] for i in idx]
+        stock_names = generate_names()
+        stocks = [stock_names[i[0]] for i in idx]
 
-    time_index = pd.date_range(start_date, end_date, **kwargs)
-    assert time_index.shape == matrix.shape[0]
-    multiindex = pd.MultiIndex.from_product([time_index, stock_names], names=["time", "stock"])
-    df = pd.DataFrame(matrix.reshape(-1, 5), index=multiindex, columns=[string.ascii_letters[i] for i in range(5)])
+    idx_list = [(i, j, k) for i, j, k in zip(times, stocks, columns)]
+
+    multiindex = pd.MultiIndex.from_tuples(idx_list, names=["time", "stock", "columns"])
+    df = pd.DataFrame(sparse_matrix.values.numpy(), index=multiindex)
+    df = df.unstack(-1).droplevel(0, 1)
     return df
 
 
