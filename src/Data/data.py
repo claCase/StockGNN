@@ -140,23 +140,73 @@ class StockTimeSeries:
             return StockTimeSeries(new_data, self.stock_exchange)
 
     def __getitem__(self, item):
-        if self._is_multiindex:
-            datetime_index = np.asarray(self.data.index.to_list())[:, 0]
-        else:
-            datetime_index = self.data.index
+        """
+        item:
+            tuple: tuple(tuple(start rows), tuple(end rows)), tuple(start_column, end_column))
+            slice: start_date:end_date
+            int: index of datetime row
+            string: index of ticker (only for multiindex)
+            datetime: row corresponding to date
+
+        Multiindex slice example:
+            start_date = datetime.fromisoformat("2005-01-01")
+            end_date = datetime.fromisoformat("2006-01-01")
+            start_ticker = "A"
+            end_ticker = "AAPL"
+            start_column = "a"
+            end_column = None
+            slice_index = ((start_date, start_ticker), (end_date, end_ticker)), (start_column, end_column))
+
+            Internally it gets converted to the following:
+            ((slice("2001-01-01", "2002-01-01"), slice("ACN", None), slice(None))
+            ((_______datetime slice__________),(__ticker slice__)), (_column slice_)
+
+        """
+        datetime_index = np.asarray(self.data.index.to_list())[:, 0]
+
         if isinstance(item, slice):
             i, j = item.start, item.stop
+            assert (isinstance(i, datetime.datetime) or i is None) and (isinstance(j, datetime.datetime) or j is None)
             if i is None:
                 i = datetime_index.min()
             if j is None:
                 j = datetime_index.max()
             if i > j:
                 raise ValueError(f"Start {i} of sequence cannot be greater than End {j}")
-            data = self.data.iloc[(i <= datetime_index) & (datetime_index <= j)]
-        elif isinstance(item, pd.DatetimeIndex):
-            data = self.data.iloc[datetime_index == item]
+            data = self.data.loc[i:j]
+        elif isinstance(item, datetime.datetime):
+            start = item
+            end = item + datetime.timedelta(microseconds=1)
+            if self._is_multiindex:
+                return self.__getitem__((((start, None), (end, None)), (None, None)))
+            else:
+                return self.__getitem__((((start,), (end,)), (None, None)))
+        elif isinstance(item, str):
+            assert self._is_multiindex
+            return self.__getitem__((((None, item), (None, item + " ")), (None, None)))
         elif isinstance(item, int):
             data = self.data.iloc[item]
+        elif isinstance(item, tuple):
+            row_slices = item[0]
+            row_start_slices = row_slices[0]
+            row_end_slices = row_slices[1]
+            assert len(row_start_slices) == len(row_end_slices)
+
+            if self._is_multiindex:
+                assert len(row_start_slices) > 1 and len(row_end_slices) > 1
+                idx_slice = tuple(slice(i, j) for i, j in zip(row_start_slices, row_end_slices))
+            else:
+                assert len(row_start_slices) == 1 and len(row_end_slices) == 1
+                idx_slice = slice(row_start_slices, row_end_slices)
+
+            column_slices = item[1]
+            if column_slices is None:
+                col_slice = slice(0, None)
+            else:
+                column_start_slices = column_slices[0]
+                column_end_slices = column_slices[1]
+                col_slice = slice(column_start_slices, column_end_slices)
+            data = self.data.loc[idx_slice, col_slice]
         else:
             raise TypeError(f"Type {type(item)} not supported for indexing")
         return StockTimeSeries(data, self.stock_exchange)
@@ -166,7 +216,7 @@ class StockTimeSeries:
 
     @property
     def available_exchanges(self):
-        return xcals.get_calendar_names(include_aliases=False)
+        return xcals.get_calendar_names(include_aliases=True)
 
     def __len__(self):
         return len(self.data.index)
