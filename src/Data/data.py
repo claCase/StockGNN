@@ -112,6 +112,8 @@ class StockTimeSeries:
         self.data = data
         self.stock_exchange = stock_exchange
         self.calendar = xcals.get_calendar(self.stock_exchange)
+        self._is_multiindex = None
+        self._stocks = None
         self.check_series_index()
 
     def is_business_day(self, start: datetime.datetime, end: datetime.datetime):
@@ -162,15 +164,15 @@ class StockTimeSeries:
             ((_______datetime slice__________),(__ticker slice__)), (_column slice_)
 
         """
-        datetime_index = np.asarray(self.data.index.to_list())[:, 0]
+        datetime_index = self.data.index
 
         if isinstance(item, slice):
             i, j = item.start, item.stop
             assert (isinstance(i, datetime.datetime) or i is None) and (isinstance(j, datetime.datetime) or j is None)
             if i is None:
-                i = datetime_index.min()
+                i = datetime_index.min()[0]
             if j is None:
-                j = datetime_index.max()
+                j = datetime_index.max()[0]
             if i > j:
                 raise ValueError(f"Start {i} of sequence cannot be greater than End {j}")
             data = self.data.loc[i:j]
@@ -218,6 +220,14 @@ class StockTimeSeries:
     def available_exchanges(self):
         return xcals.get_calendar_names(include_aliases=True)
 
+    @property
+    def stocks(self):
+        return self._stocks
+
+    @property
+    def is_multiindex(self):
+        return self._is_multiindex
+
     def __len__(self):
         return len(self.data.index)
 
@@ -225,18 +235,27 @@ class StockTimeSeries:
         if isinstance(self.data.index, pd.MultiIndex):
             datetime_index = self.data.index.levels[0]
             assert isinstance(datetime_index, pd.DatetimeIndex)
-            self.stocks = list(self.data.index.levels[1]).sort()
+            self._stocks = list(self.data.index.unique(level=1)).sort()
             self._is_multiindex = True
         else:
             assert isinstance(self.data.index, pd.DatetimeIndex)
             self._is_multiindex = False
-            self.stocks = None
+            self._stocks = None
 
     def to_matrix(self, save_path) -> (np.array, {}):
         if self._is_multiindex:
             return df_to_matrix(self.data, save_path)
         else:
             raise TypeError("Only MultiIndex can be converted to dense matrix")
+
+    def ptc_change(self, log=False):
+        if self.is_multiindex:
+            if log:
+                return self.data.groupby(level=1).apply(lambda x: np.log(1 + x.pct_change()))
+            else:
+                return self.data.groupby(level=1).apply(lambda x: x.pct_change())
+        else:
+            return self.data.pct_change()
 
 
 class TimeSeriesBatchGenerator(Sequence):
