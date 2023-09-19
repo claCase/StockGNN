@@ -5,11 +5,91 @@ import os
 import exchange_calendars as xcals
 import tensorflow as tf
 import datetime
+import pickle
+from aiohttp import ClientSession
+import asyncio as aio
 import string
+import yfinance as yf
+from bs4 import BeautifulSoup as bso
 
 Sequence = tf.keras.utils.Sequence
 
 tickers_path = os.path.join(os.getcwd(), "../..", "data", "Tickers")
+
+
+def yf_to_multiindex(yf_tickers_data: pd.DataFrame) -> dict:
+    yf_tickers_data = yf_tickers_data.unstack().reset_index().pivot(index=("Date", "level_0"),
+                                                                    columns="level_1").droplevel(0, 1)
+    yf_tickers_data.index.names = ["time", "Ticker"]
+    yf_tickers_data.columns.name = "columns"
+    return yf_tickers_data
+
+
+async def get_BA_tickers_list(save_path=None) -> dict:
+    URL = "https://www.borsaitaliana.it/borsa/azioni/listino-a-z.html?initial="
+    alphabet = [string.ascii_uppercase[i] for i in range(26)]
+    pages = {}
+    tickers = {}
+
+    async def get_tickers_from_page(page, tickers, letter, n):
+        if not isinstance(page, bso):
+            try:
+                page = bso(page, "lxml")
+                isins = (page.find("table", {"class": "m-table -firstlevel"})).find_all("a")[2::9]
+                for i in isins:
+                    try:
+                        isin = i["href"].split("/scheda/")[1][:12]
+                        name = i["title"].split("Accedi alla scheda strumento\xa0")[1]
+                        tickers[isin] = name
+                    except Exception as e:
+                        print(f"FAILED to process {i} for letter {letter} and page {n}")
+            except Exception as e:
+                print(f"Letter {letter} and number {n} FAILED to process")
+                return
+
+    async def get_page(session: ClientSession, letter: str, pages: dict, number: int):
+        resp = await session.get(URL + letter + "&lang=it&page=" + str(number))
+        resp_parsed = await resp.read()
+        print(f"Response for letter {letter} and page number {number}: {resp.status}")
+        try:
+            pages[letter][number] = resp_parsed
+        except Exception as e:
+            pages[letter] = {}
+            pages[letter][number] = resp_parsed
+
+    async with ClientSession() as session:
+        # Get first page
+        tasks = []
+        for letter in alphabet:
+            tasks.append(get_page(session, letter, pages, 1))
+        await aio.gather(*tasks)
+
+        # Get other pages (tot pages)
+        tasks = []
+        for page_letter in pages.keys():
+            phtml = bso(pages[page_letter][1], "lxml")
+            try:
+                max_n = int(phtml.find_all("ul", {"class": "nav m-pagination__nav"})[0].find_all("a")[-2].text)
+                print(f"max page for letter {page_letter} is {max_n}")
+                for n in range(2, max_n):
+                    tasks.append(get_page(session, page_letter, pages, n))
+            except Exception as e:
+                print(f"Letter failed to find next page: {page_letter}")
+        await aio.gather(*tasks)
+
+    # extract isin and name from pages
+    isin_tasks = [get_tickers_from_page(n, tickers, i, j) for i, letter in pages.items() for j, n in letter.items()]
+    await aio.gather(*isin_tasks)
+    if save_path is not None:
+        if not os.path.exists(save_path):
+            print(f"Path: {save_path} does not exist, creating...")
+            os.makedirs(save_path)
+        file_name = os.path.join(save_path, "italian_ISIN.pkl")
+        with open(file_name, "wb") as file:
+            pickle.dump(tickers, file)
+            print(f"Tickers ISIN saved to {file_name}")
+
+    return tickers
 
 
 def tickers_df(data_path, save_path=None) -> pd.DataFrame:
