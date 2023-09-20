@@ -1,4 +1,6 @@
 from enum import Enum
+import numpy as np
+
 from src.Environment.abstract.events import (Event,
                                              DataProcessEvent,
                                              DataStoreEvent,
@@ -7,13 +9,20 @@ from src.Environment.abstract.events import (Event,
                                              DATA_PROCESS_MESSAGES,
                                              DATA_STORE_MESSAGES)
 from datetime import datetime, timedelta
-from abc import ABC, abstractmethod
 import pandas as pd
 
 
 class CSVEventGather(GatherEvent):
     def __init__(self, df: pd.DataFrame, msg, datetime):
         super(CSVEventGather, self).__init__(msg=msg, datetime=datetime, data=df)
+
+    def check_message_code(self):
+        assert self.message in DATA_GATHER_MESSAGES
+
+
+class NPYEventGather(GatherEvent):
+    def __init__(self, arr: np.array, msg, datetime):
+        super(NPYEventGather, self).__init__(msg=msg, datetime=datetime, data=arr)
 
     def check_message_code(self):
         assert self.message in DATA_GATHER_MESSAGES

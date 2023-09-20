@@ -64,14 +64,16 @@ class Consumer(ABC):
             try:
                 priority, data = await self._data_queue.get()
                 try:
-                    processed_event = await asyncio.wait_for(self._preprocess(data), self._max_process_time)
+                    processed_event = await asyncio.wait_for(self._preprocess(data),
+                                                             self._max_process_time.total_seconds())
                     await event_queue.put((datetime.now(), processed_event))
                 except asyncio.TimeoutError as time_error:
                     print(f"Data Processing for {self._type} {self._name} took longer than {self._max_process_time}")
                     await event_queue.put(MaximumTimeExceeded(self._type + "_" + self._name, datetime.now()))
                     raise time_error
                 try:
-                    store_event = await asyncio.wait_for(self._store_data(processed_event), self._max_storing_time)
+                    store_event = await asyncio.wait_for(self._store_data(processed_event),
+                                                         self._max_storing_time.total_seconds())
                     await event_queue.put((datetime.now(), store_event))
                 except asyncio.TimeoutError as time_error:
                     print(f"Data Saving for {self._type} {self._name} took longer than {self._max_storing_time}")
@@ -90,11 +92,9 @@ class Consumer(ABC):
 
 class Producer(ABC):
     def __init__(self, type, name="default",
-                 time_interval: timedelta = timedelta(seconds=1),
                  max_gathering_time: timedelta = timedelta(days=1000)):
         self._type = type
         self._name = name
-        self._time_interval = time_interval
         self._latest_time = datetime.now()
         self._max_gathering_time = max_gathering_time
         self._is_done = False
@@ -119,7 +119,7 @@ class Producer(ABC):
         while not self._is_done:
             try:
                 try:
-                    data = await asyncio.wait_for(self._gather_data(), self._max_gathering_time)
+                    data = await asyncio.wait_for(self._gather_data(), self._max_gathering_time.total_seconds())
                     await event_queue.put((datetime.now(), data))
                 except asyncio.TimeoutError as time_error:
                     await event_queue.put((datetime.now(), MaximumTimeExceeded(self._type + "_" + self._name,
