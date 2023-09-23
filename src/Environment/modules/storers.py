@@ -1,5 +1,5 @@
 import os
-from src.Environment.abstract.data_handlers import DataHandler
+from src.Environment.abstract.data_handlers import Consumer
 from src.Environment.abstract.events import DATA_PROCESS_MESSAGES, DATA_STORE_MESSAGES, DATA_GATHER_MESSAGES, \
     GatherEvent
 from src.Environment.modules.events import CSVEventSave, CSVEventProcess, CSVEventGather
@@ -13,12 +13,12 @@ from asyncio import Queue
 # from src.Data.data import
 
 
-class DataFrameHandler(DataHandler):
+class CSVHandler(Consumer):
     """
     Abstract Class used to define the logic for processing incoming events and store data. The architecture is based on
-    asynchronous producer-consumer logic. This class is the consumer, the DataGather class is the producer.
-    The DataGather class posts data onto the main event queue, where events are dispatched to the respective data handlers.
-    The DataHandler class processes and stores the data from the internal event queue.
+    asynchronous producer-consumer logic. This class is the consumer, the Producer class is the producer.
+    The Producer class posts data onto the main event queue, where events are dispatched to the respective data handlers.
+    The Consumer class processes and stores the data from the internal event queue.
     """
 
     def __init__(self,
@@ -27,7 +27,7 @@ class DataFrameHandler(DataHandler):
                  data_wait_time=2,
                  max_process_time: timedelta = timedelta(seconds=500),
                  max_storing_time=timedelta(seconds=500)):
-        super(DataFrameHandler, self).__init__("CSV", name, data_wait_time, max_process_time, max_storing_time)
+        super().__init__("CSV", name, data_wait_time, max_process_time, max_storing_time)
         self._save_path = save_path
 
     async def _preprocess(self, data_event):
@@ -48,23 +48,23 @@ class DataFrameHandler(DataHandler):
             raise e
 
 
-class StockTimeSeriesHandler(DataHandler):
+class StockTimeSeriesHandler(Consumer):
     def __init__(self,
                  save_path: os.path,
                  name="default",
-                 exchange='',
+                 exchange='NYSE',
                  data_wait_time=2,
                  max_process_time: timedelta = timedelta(seconds=500),
                  max_storing_time=timedelta(seconds=500)):
-        super(StockTimeSeriesHandler, self).__init__("STOCK_SERIES", name, data_wait_time, max_process_time,
+        super().__init__("STOCK_SERIES", name, data_wait_time, max_process_time,
                                                      max_storing_time)
         self._save_path = save_path
         self._exchange = exchange
 
-    async def _preprocess(self, data):
+    async def _preprocess(self, data: CSVEventGather):
         assert isinstance(data, CSVEventGather) and data.message == DATA_GATHER_MESSAGES.GATHERED
         data = data.data
-        data = df_to_matrix(data)
+        return StockTimeSeries(data, self._exchange)
 
     async def _store_data(self, data_event):
         pass
