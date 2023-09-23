@@ -372,6 +372,7 @@ class StockTimeSeries:
         """
         adj: Adjacency matrix for tickers, None if fully connected (ones matrix), False if not use else ndarray
         """
+
         def get_x_y(x, delta):
             if isinstance(x, pd.DataFrame):
                 assert delta < x.index.levshape[0] // 2
@@ -437,12 +438,13 @@ class StockTimeSeries:
         else:
             x_test = None
 
-        if start_validation is not None: #and end_validation is not None:
+        if start_validation is not None:  # and end_validation is not None:
             x_validation = self.__getitem__(slice(start_validation, end_validation))
             if adj:
                 idx_start_validation = self._data.index.get_loc(x_validation.data.index.min()[0])
                 diff_validation = len(x_validation.data.index.unique())
-                assert idx_start_validation + diff_validation <= self._data.index.levshape[0], f"Choose another end date {end_validation}"
+                assert idx_start_validation + diff_validation <= self._data.index.levshape[
+                    0], f"Choose another end date {end_validation}"
                 if isinstance(adj, bool):
                     adj_validation = np.ones(shape=(diff_validation, len(self._stocks), len(self._stocks)))
                 else:
@@ -456,7 +458,8 @@ class StockTimeSeries:
             validation = None
         else:
             if adj:
-                validation = TimeSeriesBatchGenerator((x_validation, x_adj_validation), (y_validation, y_adj_validation), seq_len)
+                validation = TimeSeriesBatchGenerator((x_validation, x_adj_validation),
+                                                      (y_validation, y_adj_validation), seq_len)
             else:
                 validation = TimeSeriesBatchGenerator(x_validation, y_validation, seq_len)
 
@@ -474,6 +477,18 @@ class StockTimeSeries:
             train = TimeSeriesBatchGenerator(x_train, y_train, seq_len)
 
         return train, test, validation
+
+    def save(self, path, name="stock_time_series"):
+        try:
+            self._data.to_csv(os.path.join(path, name + ".csv"))
+        except Exception as e:
+            raise e
+
+    def load(self, path):
+        try:
+            self._data = pd.load_csv(path)
+        except Exception as e:
+            raise e
 
 
 class TimeSeriesBatchGenerator(Sequence):
