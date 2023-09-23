@@ -4,13 +4,14 @@ import numpy as np
 import os
 import exchange_calendars as xcals
 import tensorflow as tf
-import datetime
+from datetime import datetime, timedelta
 import pickle
 from aiohttp import ClientSession
 import asyncio as aio
 import string
 import yfinance as yf
 from bs4 import BeautifulSoup as bso
+import logging
 
 Sequence = tf.keras.utils.Sequence
 
@@ -119,6 +120,9 @@ def tickers_df(data_path, save_path=None) -> pd.DataFrame:
 
 
 def to_multiindex(df: pd.DataFrame):
+    """
+    Transforms dataframe to multiindex df, must have "datetime":datetime and "tickers":str named columns
+    """
     tot_df = df.set_index([pd.DatetimeIndex(df["datetime"]), "ticker"])
     tot_df.drop("datetime", axis=1, inplace=True)
     tot_df.sort_index(inplace=True)
@@ -170,8 +174,8 @@ def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[Dict]] = None,
         times = [idx2time[i[0]] for i in idx]
         stocks = [idx2stock[i[1]] for i in idx]
     else:
-        start_date = datetime.date.fromisoformat("2000-01-01")
-        end_date = start_date + datetime.timedelta(days=matrix.shape[0] - 1)
+        start_date = datetime.fromisoformat("2000-01-01")
+        end_date = start_date + timedelta(days=matrix.shape[0] - 1)
         time_range = pd.date_range(start_date, end_date, **kwargs)
         times = [time_range[i[0]] for i in idx]
         stock_names = generate_names()
@@ -189,14 +193,15 @@ class StockTimeSeries:
     def __init__(self, data: pd.DataFrame, stock_exchange: str):
         if stock_exchange not in self.available_exchanges:
             raise ValueError(f"Exchange {stock_exchange} not in {self.available_exchanges}")
-        self.data = data
+        self._data = data
         self.stock_exchange = stock_exchange
         self.calendar = xcals.get_calendar(self.stock_exchange)
         self._is_multiindex = None
         self._stocks = None
+        self._frequency = None
         self.check_series_index()
 
-    def is_business_day(self, start: datetime.datetime, end: datetime.datetime):
+    def is_business_day(self, start: datetime, end: datetime):
         data_slice = self.__getitem__(slice(start, end)).data
         if self._is_multiindex:
             index = pd.DatetimeIndex(np.asarray(data_slice.index.to_list())[:, 0])
@@ -209,15 +214,15 @@ class StockTimeSeries:
     def remove_non_business_days(self, start=None, end=None, inplace=True):
         new_data = self.__getitem__(slice(start, end)).data.iloc[self.is_business_day(start, end)]
         if inplace:
-            self.data = new_data
+            self._data = new_data
         else:
             return StockTimeSeries(new_data, self.stock_exchange)
 
     def fill_non_business_days(self, fill_value, start=None, end=None, inplace=True):
         is_business_day = self.is_business_day(start, end)
-        new_data = self.data[is_business_day] = fill_value
+        new_data = self._data[is_business_day] = fill_value
         if inplace:
-            self.data = new_data
+            self._data = new_data
         else:
             return StockTimeSeries(new_data, self.stock_exchange)
 
@@ -244,21 +249,32 @@ class StockTimeSeries:
             ((_______datetime slice__________),(__ticker slice__)), (_column slice_)
 
         """
-        datetime_index = self.data.index
+        datetime_index = self._data.index
 
         if isinstance(item, slice):
             i, j = item.start, item.stop
-            assert (isinstance(i, datetime.datetime) or i is None) and (isinstance(j, datetime.datetime) or j is None)
-            if i is None:
-                i = datetime_index.min()[0]
-            if j is None:
-                j = datetime_index.max()[0]
-            if i > j:
-                raise ValueError(f"Start {i} of sequence cannot be greater than End {j}")
-            data = self.data.loc[i:j]
-        elif isinstance(item, datetime.datetime):
+            if (isinstance(i, datetime) or i is None) and (isinstance(j, datetime) or j is None):
+                if i is None:
+                    if self._is_multiindex:
+                        i = datetime_index.min()[0]
+                    else:
+                        i = datetime_index.min()
+                if j is None:
+                    if self._is_multiindex:
+                        j = datetime_index.max()[0]
+                    else:
+                        j = datetime_index.max()
+                if i > j:
+                    raise ValueError(f"Start {i} of sequence cannot be greater than End {j}")
+                data = self._data.loc[i:j]
+            elif (isinstance(i, str) or i is None) and (isinstance(j, str) or j is None):
+                assert self._is_multiindex
+                return self.__getitem__((((None, i), (None, j)), (None, None)))
+            else:
+                raise TypeError(f"Slice start {i} and end {j} cannot be of type {type(i)}")
+        elif isinstance(item, datetime):
             start = item
-            end = item + datetime.timedelta(microseconds=1)
+            end = item + timedelta(microseconds=1)
             if self._is_multiindex:
                 return self.__getitem__((((start, None), (end, None)), (None, None)))
             else:
@@ -267,7 +283,7 @@ class StockTimeSeries:
             assert self._is_multiindex
             return self.__getitem__((((None, item), (None, item + " ")), (None, None)))
         elif isinstance(item, int):
-            data = self.data.iloc[item]
+            data = self._data.iloc[item]
         elif isinstance(item, tuple):
             row_slices = item[0]
             row_start_slices = row_slices[0]
@@ -288,13 +304,13 @@ class StockTimeSeries:
                 column_start_slices = column_slices[0]
                 column_end_slices = column_slices[1]
                 col_slice = slice(column_start_slices, column_end_slices)
-            data = self.data.loc[idx_slice, col_slice]
+            data = self._data.loc[idx_slice, col_slice]
         else:
             raise TypeError(f"Type {type(item)} not supported for indexing")
         return StockTimeSeries(data, self.stock_exchange)
 
     def __repr__(self):
-        return self.data.head(n=np.minimum(len(self.data), 50)).to_string()
+        return self._data.head(n=np.minimum(len(self._data), 50)).to_string()
 
     @property
     def available_exchanges(self):
@@ -308,34 +324,156 @@ class StockTimeSeries:
     def is_multiindex(self):
         return self._is_multiindex
 
+    @property
+    def data(self):
+        return self._data
+
     def __len__(self):
-        return len(self.data.index)
+        return len(self._data.index)
 
     def check_series_index(self):
-        if isinstance(self.data.index, pd.MultiIndex):
-            datetime_index = self.data.index.levels[0]
+        if isinstance(self._data.index, pd.MultiIndex):
+            datetime_index = self._data.index.levels[0]
             assert isinstance(datetime_index, pd.DatetimeIndex)
-            self._stocks = list(self.data.index.unique(level=1)).sort()
+            self._stocks = list(self._data.index.unique(level=1))
+            self._stocks.sort()
             self._is_multiindex = True
         else:
-            assert isinstance(self.data.index, pd.DatetimeIndex)
+            assert isinstance(self._data.index, pd.DatetimeIndex)
             self._is_multiindex = False
             self._stocks = None
 
     def to_matrix(self, save_path) -> (np.array, {}):
         if self._is_multiindex:
-            return df_to_matrix(self.data, save_path)
+            return df_to_matrix(self._data, save_path)
         else:
             raise TypeError("Only MultiIndex can be converted to dense matrix")
 
     def ptc_change(self, log=False):
         if self.is_multiindex:
             if log:
-                return self.data.groupby(level=1).apply(lambda x: np.log(1 + x.pct_change()))
+                return self._data.groupby(level=1).apply(lambda x: np.log(1 + x.pct_change()))
             else:
-                return self.data.groupby(level=1).apply(lambda x: x.pct_change())
+                return self._data.groupby(level=1).apply(lambda x: x.pct_change())
         else:
-            return self.data.pct_change()
+            return self._data.pct_change()
+
+    def to_time_series_batch_generator(self,
+                                       start_train: Optional[datetime] = None,
+                                       end_train: Optional[datetime] = None,
+                                       start_test: Optional[datetime] = None,
+                                       end_test: Optional[datetime] = None,
+                                       start_validation: Optional[datetime] = None,
+                                       end_validation: Optional[datetime] = None,
+                                       adj: Optional[np.ndarray] = None,
+                                       seq_len: int = 30,
+                                       delta_pred: int = 1,
+                                       **kwargs):
+        """
+        adj: Adjacency matrix for tickers, None if fully connected (ones matrix), False if not use else ndarray
+        """
+        def get_x_y(x, delta):
+            if isinstance(x, pd.DataFrame):
+                assert delta < x.index.levshape[0] // 2
+                x, _ = df_to_matrix(x)
+            elif isinstance(x, np.ndarray):
+                assert delta < len(x) // 2
+            y_train = x[delta:]
+            x_train = x[:-delta]
+            return x_train, y_train
+
+        assert self._is_multiindex and self._data.index.get_level_values(
+            0).freq != '', "Data is not Multiindex and the datetime index frequency is not defined"
+        if start_train is None:
+            start_train = self._data.index.min()[0]
+        if end_train is None:
+            end_train = self._data.index.max()[0]
+
+        if start_test is not None:
+            if start_train < start_test < end_train:
+                logging.WARNING(f"Start test date {start_test} is in between start train date {start_train}"
+                                f" and end training date {end_train}")
+        if end_test is not None:
+            if start_train < end_test < end_train:
+                logging.WARNING(f"End test date {start_test} is in between start train date {start_train}"
+                                f" and end training date {end_train}")
+        if start_validation is not None:
+            if ((start_train < start_validation < end_train) or
+                    (start_test < start_validation < end_test)):
+                logging.WARNING(
+                    f"Start validation date {start_validation} is in between start train date {start_train}"
+                    f" and end training date {end_train}")
+        if end_validation is not None:
+            if ((start_train < end_validation < end_train) or
+                    (start_test < end_validation < end_test)):
+                logging.WARNING(
+                    f"Start validation date {end_validation} is in between start train date {start_train}"
+                    f" and end training date {end_train}")
+
+        x_train = self.__getitem__(slice(start_train, end_train))
+
+        if adj:
+            idx_start_train = self._data.index.get_loc(x_train.data.index.min()[0])
+            diff_train = len(x_train.data.index.unique(0))
+            if isinstance(adj, bool):
+                adj_train = np.ones(shape=(diff_train, len(self._stocks), len(self._stocks)))
+            else:
+                adj_train = adj[idx_start_train:idx_start_train + diff_train]
+            x_adj_train, y_adj_train = get_x_y(adj_train, delta_pred)
+        x_train, y_train = get_x_y(x_train.data, delta_pred)
+
+        if start_test is not None:
+            x_test = self.__getitem__(slice(start_test, end_test))
+            if adj:
+                idx_start_test = self._data.index.get_loc(x_test.data.index.min()[0])
+                diff_test = len(x_test.data.index.unique())
+                assert idx_start_test + diff_test <= self._data.index.levshape[0], f"Choose another end date {end_test}"
+                if isinstance(adj, bool):
+                    adj_test = np.ones(shape=(diff_test, len(self._stocks), len(self._stocks)))
+                else:
+                    adj_test = adj[idx_start_test:idx_start_test + diff_test]
+                x_adj_test, y_adj_test = get_x_y(adj_test, delta_pred)
+            x_test, y_test = get_x_y(x_test.data, delta_pred)
+        else:
+            x_test = None
+
+        if start_validation is not None: #and end_validation is not None:
+            x_validation = self.__getitem__(slice(start_validation, end_validation))
+            if adj:
+                idx_start_validation = self._data.index.get_loc(x_validation.data.index.min()[0])
+                diff_validation = len(x_validation.data.index.unique())
+                assert idx_start_validation + diff_validation <= self._data.index.levshape[0], f"Choose another end date {end_validation}"
+                if isinstance(adj, bool):
+                    adj_validation = np.ones(shape=(diff_validation, len(self._stocks), len(self._stocks)))
+                else:
+                    adj_validation = adj[idx_start_validation:idx_start_validation + diff_validation]
+                x_adj_validation, y_adj_validation = get_x_y(adj_validation, delta_pred)
+            x_validation, y_validation = get_x_y(x_validation.data, delta_pred)
+        else:
+            x_validation = None
+
+        if x_validation is None:
+            validation = None
+        else:
+            if adj:
+                validation = TimeSeriesBatchGenerator((x_validation, x_adj_validation), (y_validation, y_adj_validation), seq_len)
+            else:
+                validation = TimeSeriesBatchGenerator(x_validation, y_validation, seq_len)
+
+        if x_test is None:
+            test = None
+        else:
+            if adj:
+                test = TimeSeriesBatchGenerator((x_test, x_adj_test), (y_test, y_adj_test), seq_len)
+            else:
+                test = TimeSeriesBatchGenerator(x_test, y_test, seq_len)
+
+        if adj:
+            train = TimeSeriesBatchGenerator((x_train, x_adj_train), (y_train, y_adj_train), seq_len)
+        else:
+            train = TimeSeriesBatchGenerator(x_train, y_train, seq_len)
+
+        return train, test, validation
 
 
 class TimeSeriesBatchGenerator(Sequence):
