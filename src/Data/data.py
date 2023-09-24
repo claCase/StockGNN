@@ -198,29 +198,31 @@ class StockTimeSeries:
         self.calendar = xcals.get_calendar(self.stock_exchange)
         self._is_multiindex = None
         self._stocks = None
-        self._frequency = None
         self.check_series_index()
 
-    def is_business_day(self, start: datetime, end: datetime):
+    def business_days(self, start: datetime, end: datetime):
         data_slice = self.__getitem__(slice(start, end)).data
         if self._is_multiindex:
-            index = pd.DatetimeIndex(np.asarray(data_slice.index.to_list())[:, 0])
+            index = data_slice.index.unique(0)
         else:
-            index = data_slice.index
+            index = data_slice.index.unique()
         cal = self.calendar.sessions_in_range(index.min(), index.max())
         check = index.isin(cal)
-        return check
+        business_days = index[check]
+        mask = np.in1d(data_slice.index.get_level_values(0), business_days)
+        return business_days, data_slice, mask
 
-    def remove_non_business_days(self, start=None, end=None, inplace=True):
-        new_data = self.__getitem__(slice(start, end)).data.iloc[self.is_business_day(start, end)]
+    def remove_non_business_days(self, start=None, end=None, inplace=False):
+        business_days, data_slice, mask = self.business_days(start, end)
+        new_data = data_slice.loc[mask, :]
         if inplace:
             self._data = new_data
         else:
             return StockTimeSeries(new_data, self.stock_exchange)
 
     def fill_non_business_days(self, fill_value, start=None, end=None, inplace=True):
-        is_business_day = self.is_business_day(start, end)
-        new_data = self._data[is_business_day] = fill_value
+        business_days, data_slice, mask = self.business_days(start, end)
+        new_data = self._data.loc[mask, :] = fill_value
         if inplace:
             self._data = new_data
         else:
@@ -503,52 +505,50 @@ class TimeSeriesBatchGenerator(Sequence):
 
     def __init__(self, x, y, sequence_len):
         super().__init__()
-        if tf.nest.is_nested(x):
-            self.x = [i for i in tf.nest.flatten(x)]
-            self.is_input_nested = True
-        else:
-            self.x = x
-            self.is_input_nested = False
+        self._sequence_len = sequence_len
+        self._initial_checks(x, y)
 
-        if tf.nest.is_nested(y):
-            self.y = tf.nest.flatten(y)
-            self.is_output_nested = True
-        else:
-            self.y = y
-            self.is_output_nested = False
+    @property
+    def x(self):
+        return self._x
 
-        self.sequence_len = sequence_len
-        self.check_len()
+    @property
+    def y(self):
+        return self._y
+
+    @property
+    def sequence_len(self):
+        return self._sequence_len
 
     def __len__(self):
         if self.is_input_nested:
-            shape = self.x[0].shape[0]
+            shape = self._x[0].shape[0]
         else:
-            shape = self.x.shape[0]
-        return shape // self.sequence_len
+            shape = self._x.shape[0]
+        return shape // self._sequence_len
 
     def check_len(self):
         if self.is_input_nested:
-            shape = self.x[0].shape
+            shape = self._x[0].shape
         else:
-            shape = self.x.shape
-        if self.sequence_len > shape[0]:
+            shape = self._x.shape
+        if self._sequence_len > shape[0]:
             raise ValueError("seq_len cannot be greater than the length of the time series")
 
     def __getitem__(self, idx):
-        low = idx * self.sequence_len
+        low = idx * self._sequence_len
         if self.is_input_nested:
-            high = tf.math.minimum((idx + 1) * self.sequence_len, self.x[0].shape[0])
+            high = tf.math.minimum((idx + 1) * self._sequence_len, self._x[0].shape[0])
         else:
-            high = tf.math.minimum((idx + 1) * self.sequence_len, self.x.shape[0])
+            high = tf.math.minimum((idx + 1) * self._sequence_len, self._x.shape[0])
 
         if self.is_input_nested:
             lam = lambda i: tf.expand_dims(i[low:high], axis=0)
-            next_batch_x = tf.nest.map_structure(lam, self.x)
-            next_batch_y = tf.nest.map_structure(lam, self.y)
+            next_batch_x = tf.nest.map_structure(lam, self._x)
+            next_batch_y = tf.nest.map_structure(lam, self._y)
         else:
-            next_batch_x = self.x[low:high][None, :]
-            next_batch_y = self.y[low:high][None, :]
+            next_batch_x = self._x[low:high][None, :]
+            next_batch_y = self._y[low:high][None, :]
         return next_batch_x, next_batch_y
 
     def __iter__(self):
@@ -556,6 +556,42 @@ class TimeSeriesBatchGenerator(Sequence):
 
     def on_epoch_end(self):
         pass
+
+    def save(self, path, name="batch_generator"):
+        try:
+            with open(os.path.join(path, name + "_input.pkl"), "wb") as file:
+                pickle.dump(self._x, file)
+            with open(os.path.join(path, name + "_output.pkl"), "wb") as file:
+                pickle.dump(self._y, file)
+        except Exception as e:
+            raise e
+
+    def load(self, path):
+        try:
+            with open(os.path.join(path) + "_input.pkl", "rb") as file:
+                x = pickle.load(file)
+            with open(os.path.join(path) + "_output.pkl", "rb") as file:
+                y = pickle.load(file)
+        except Exception as e:
+            raise e
+        self._initial_checks(x, y)
+
+    def _initial_checks(self, x, y):
+        if tf.nest.is_nested(x):
+            self._x = [i for i in tf.nest.flatten(x)]
+            self.is_input_nested = True
+        else:
+            self._x = x
+            self.is_input_nested = False
+
+        if tf.nest.is_nested(y):
+            self._y = tf.nest.flatten(y)
+            self.is_output_nested = True
+        else:
+            self._y = y
+            self.is_output_nested = False
+
+        self.check_len()
 
 
 if __name__ == "__main__":
