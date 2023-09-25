@@ -1,3 +1,4 @@
+import os
 from src.Data import data
 from src.Modelling import models, losses
 import numpy as np
@@ -7,14 +8,14 @@ from src.Modelling.utils import diff_log
 import tensorflow as tf
 
 
-def main(seq_len=110, len_train=110, len_test=500, epochs=200):
-    x = np.load("../../../data/Processed/time_series_matrix_reduced.npy")
+def main(seq_len=60, len_train=60, len_test=60, epochs=200):
+    x = np.load("../../../data/Processed/time_series_matrix.npy")
     N = x.shape[1]
     x_diff = diff_log(x)
     x_diff = np.maximum(np.minimum(x_diff, 1), -1)
     x_train = x_diff[:len_train]
     a_train = np.ones(shape=(len_train, N, N))
-    x_test = x_diff[len_train+1:len_train+len_test+1]
+    x_test = x_diff[len_train:len_train+len_test]
     a_test = np.ones(shape=(len_test, N, N))
     y_train = x_diff[1:len_train+1, :, -2]
     y_test = x_diff[len_train+1:len_train+len_test+1, :, -2]
@@ -23,7 +24,16 @@ def main(seq_len=110, len_train=110, len_test=500, epochs=200):
     model = models.RNNGAT(x_diff.shape[1], 0.1, 0.1, 4, 15, 1, stateful=True)
     o, p = model((x_test[None, :], a_test[None, :]))
     model.compile(loss=losses.custom_mse)
-    history = model.fit(dg_train, validation_data=dg_test, epochs=epochs)
+    log_dir = os.path.join(os.getcwd(), "../../../Analysis/Subclass")
+    tb_callback = tf.keras.callbacks.TensorBoard(log_dir, update_freq=1, profile_batch='10, 15')
+    history = model.fit(dg_train, validation_data=dg_test, epochs=epochs, callbacks=[tb_callback])
+
+    plt.figure()
+    plt.plot(history.history["Training Loss"], color="blue", label="Training Loss")
+    plt.plot(history.history["val_Test Loss"], color="red", label="Validation Loss")
+    plt.legend()
+    plt.show()
+
     _, p_train = model.predict(dg_train)
     _, p_test = model.predict(dg_test)
 

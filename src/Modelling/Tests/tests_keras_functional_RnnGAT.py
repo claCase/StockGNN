@@ -2,11 +2,11 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
 from src.Modelling.models import build_RNNGAT
+from src.Modelling.utils import train, diff_log
 from src.Data import data
 import argparse
 import os
 import pickle as pkl
-from src.Modelling.utils import train, diff_log
 
 
 def main(gpu=True,
@@ -27,38 +27,40 @@ def main(gpu=True,
         tf.config.set_visible_devices(physical_devices)
 
     processed = os.path.join(os.getcwd(), "../../../data", "Processed")
-    if not os.path.exists(os.path.join(processed, "time_series_matrix_reduced.npy")):
+    if not os.path.exists(os.path.join(processed, "time_series_matrix.npy")):
         df = data.tickers_df(tickers_path)
         df.to_csv(os.path.join(processed, "df.csv"))
-        matrix, mapping = data.df_to_matrix(df)
-        np.save(os.path.join(processed, "time_series_matrix.npy"), matrix)
-        with open(os.path.join(processed, "mappings.pkl"), "wb") as file:
-            pkl.dump(mapping, file)
+        matrix, mapping, columns = data.df_to_matrix(df, save_path=processed, name="time_series")
     else:
         matrix = np.load(os.path.join(processed, "time_series_matrix.npy"))
-        with open(os.path.join(processed, "mappings.pkl"), "rb") as file:
+        with open(os.path.join(processed, "time_series_index_mappings.pkl"), "rb") as file:
             mapping = pkl.load(file)
+        with open(os.path.join(processed, "time_series_columns_mapping.pkl"), "rb") as file:
+            columns = pkl.load(file)
+        with open(os.path.join(processed, "time_series_unique_index.pkl"), "rb") as file:
+             idx_mapping = pkl.load(file)
+
     diff_matrix = diff_log(matrix)
 
     kwargs_cell = {"dropout": 0.01,
                    "activation": "relu",
                    "recurrent_dropout": 0.01,
-                   "hidden_size_out": 15,
                    "regularizer": "l2",
                    "layer_norm": False,
                    "gatv2": True,
                    "concat_heads": False,
-                   "return_attn_coef": False}
-    model = build_RNNGAT(*diff_matrix.shape[1:], kwargs_cell=kwargs_cell, attn_heads=4, channels=15)
+                   "return_attn_coef": False,
+                   "attn_heads":4,
+                   "channels":15}
+    model = build_RNNGAT(*diff_matrix.shape[1:], kwargs_cell=kwargs_cell)
     model.compile(optimizer=tf.keras.optimizers.Adam(0.001))
 
     a = np.ones(shape=(*diff_matrix.shape[:-1], diff_matrix.shape[-2]))
-    loss_hist = []
     t0 = 0
     t1 = 60
     dt = 60
 
-    profiler_dir = os.path.join(os.getcwd(), "../../../Analysis")
+    profiler_dir = os.path.join(os.getcwd(), "../../../Analysis/Functional")
     options = tf.profiler.experimental.ProfilerOptions(host_tracer_level=3,
                                                        python_tracer_level=1,
                                                        device_tracer_level=1)
@@ -74,7 +76,9 @@ def main(gpu=True,
     if show:
 
         plt.figure()
-        plt.plot(np.log(loss_hist))
+        plt.plot(np.log(loss_hist["Training Loss"]), label="Traning Loss")
+        plt.plot(np.log(loss_hist["Test Loss"]), label="Test Loss")
+        plt.legend()
         plt.suptitle("Loss History")
         plt.xlabel("Epochs")
         plt.ylabel("MSE")
