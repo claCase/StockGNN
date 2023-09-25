@@ -7,6 +7,7 @@ from src.Modelling.losses import custom_mse
 m = tf.keras.models
 l = tf.keras.layers
 act = tf.keras.activations
+init = tf.keras.initializers
 
 
 def build_RNNGAT(nodes,
@@ -20,7 +21,12 @@ def build_RNNGAT(nodes,
                               "layer_norm": False,
                               "gatv2": True,
                               "concat_heads": False,
-                              "return_attn_coef": False},
+                              "return_attn_coef": False,
+                              "attn_heads": 4,
+                              "channels": 15},
+                 kwargs_rnn={"stateful": False,
+                             "return_sequences": True,
+                             "return_state": True},
                  kwargs_out={"units": 1, "activation": "tanh"},
                  single=True):
     i1 = tf.keras.Input(shape=(None, nodes, input_features), batch_size=1)
@@ -29,7 +35,7 @@ def build_RNNGAT(nodes,
         cell = NestedGRUGATCellSingle(nodes, *args, **kwargs_cell)
     else:
         cell = NestedGRUGATCell(nodes, *args, **kwargs_cell)
-    rnn = l.RNN(cell, return_sequences=True, return_state=True)
+    rnn = l.RNN(cell, **kwargs_rnn, time_major=False)
     pred_layer = l.Dense(**kwargs_out)
     # pred_layer = l.Dense(1, **kwargs_out)
     o, h = rnn((i1, i2))
@@ -49,11 +55,14 @@ def build_RNNAttention(nodes,
                                     "hidden_size_out": 15,
                                     "regularizer": "l2",
                                     "layer_norm": False},
+                       kwargs_rnn={"stateful": False,
+                                   "return_sequences": True,
+                                   "return_state": True},
                        kwargs_out={"activation": "tanh"}):
     i1 = tf.keras.Input(shape=(None, nodes, input_features), batch_size=None)
     i2 = tf.keras.Input(shape=(None, nodes, nodes), batch_size=None)
     cell = NestedGRUAttentionCell(nodes, **kwargs_cell)
-    rnn = l.RNN(cell, return_sequences=True, return_state=True)
+    rnn = l.RNN(cell, **kwargs_rnn, time_major=False)
     pred_layer = l.Dense(1, **kwargs_out)
     o, h = rnn((i1, i2))
     p = pred_layer(o)
@@ -75,7 +84,7 @@ class RNNGAT(m.Model):
                  regularizer=None,
                  return_attn_coef=False,
                  layer_norm=False,
-                 initializer="glorot_normal",
+                 initializer=init.GlorotNormal,
                  gatv2=True,
                  single_gnn=True,
                  return_sequences=True,
@@ -83,7 +92,6 @@ class RNNGAT(m.Model):
                  go_backwards=False,
                  stateful=False,
                  unroll=False,
-                 time_major=False,
                  **kwargs):
         super().__init__(**kwargs)
         self.loss_tracker = tf.keras.metrics.Mean(name="loss")
@@ -107,7 +115,6 @@ class RNNGAT(m.Model):
         self.go_backwards = go_backwards
         self.stateful = stateful
         self.unroll = unroll
-        self.time_major = time_major
         self.single_gnn = single_gnn
         self.out_channels = out_channels
 
@@ -152,7 +159,7 @@ class RNNGAT(m.Model):
                          go_backwards=self.go_backwards,
                          stateful=self.stateful,
                          unroll=self.unroll,
-                         time_major=self.time_major)
+                         time_major=False)
         self.rnn.build((x, a))
         rnn_out_shape = self.rnn.compute_output_shape((x, a))
         self.pred_out = l.Dense(self.out_channels, self.output_activation)

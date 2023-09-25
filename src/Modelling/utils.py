@@ -4,7 +4,8 @@ import os
 import datetime
 
 
-def train(model, x, y,
+def train(model,
+          x, y,
           x_val=None, y_val=None,
           epochs=500,
           log_dir="./",
@@ -15,11 +16,9 @@ def train(model, x, y,
     @tf.function
     def step(x, y):
         with tf.GradientTape() as tape:
-            with tf.profiler.experimental.Trace("inference", step_num=i):
-                o, p = model(x)
-            with tf.profiler.experimental.Trace("loss", step_num=i):
-                l = tf.reduce_mean(
-                    tf.keras.losses.mse(tf.reshape(y, (-1, 1)), tf.reshape(p, (-1, 1))))
+            o, p = model(x)
+            l = tf.reduce_mean(
+                tf.keras.losses.mse(tf.reshape(y, (-1, 1)), tf.reshape(p, (-1, 1))))
         with tf.profiler.experimental.Trace("train", step_num=i):
             grads = tape.gradient(l, model.trainable_variables)
             if model._compile_was_called:
@@ -28,7 +27,7 @@ def train(model, x, y,
                 optim.apply_gradients(zip(grads, model.trainable_variables))
         return l
 
-    loss_hist = []
+    loss_hist = {"Training Loss":[], "Test Loss":[]}
     train_writer = tf.summary.create_file_writer(
         os.path.join(log_dir, "History", "Train", datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
     validation_writer = tf.summary.create_file_writer(
@@ -36,18 +35,23 @@ def train(model, x, y,
     tf.profiler.experimental.start(os.path.join(log_dir, "Profiler"),
                                    options=profiler_options)
     for i in range(epochs):
-        l = step(x, y)
-        loss_hist.append(l)
+        with tf.profiler.experimental.Trace("Train", step_num=i):
+            l = step(x, y)
+        loss_hist["Training Loss"].append(l)
         with train_writer.as_default(step=i):
             tf.summary.scalar("MeanSquaredError_train", l)
         if x_val is not None and y_val is not None:
             o_val, p_val = model.predict(x_val)
             l_val = tf.reduce_mean(
                 tf.keras.losses.mse(tf.reshape(y_val, (-1, 1)), tf.reshape(p_val, (-1, 1))))
+            loss_hist["Test Loss"].append(l_val)
             with validation_writer.as_default(step=i):
                 tf.summary.scalar("MeanSquaredError_test", l_val)
-        tf.print(f"Epoch {i}: {l}")
-        if i == 10:
+        if x_val is not None:
+            tf.print(f"Epoch {i}: Training loss: {l}  Validation Loss: {l_val}")
+        else:
+            tf.print(f"Epoch {i}: Training loss: {l}")
+        if i == 3:
             tf.profiler.experimental.stop()
     return loss_hist
 

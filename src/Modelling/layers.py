@@ -150,7 +150,7 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, tf.keras.__internal__.layers.B
                  regularizer=None,
                  return_attn_coef=False,
                  layer_norm=False,
-                 initializer=init.glorot_normal,
+                 initializer=init.GlorotNormal,
                  gatv2: bool = True,
                  **kwargs):
         super(NestedGRUGATCellSingle, self).__init__(**kwargs)
@@ -168,10 +168,7 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, tf.keras.__internal__.layers.B
         self.initializer = initializer
         self.gatv2 = gatv2
         self.state_size = tf.TensorShape((self.tot_nodes, self.hidden_size_out))
-        if not self.mincut and self.return_attn_coef:
-            tf.compat.v1.logging.warning(
-                "Min-cut Loss cannot be computed without returning attention coefficients, set return_attn_coef to True"
-            )
+
         if return_attn_coef:
             self.output_size = [tf.TensorShape((self.tot_nodes, self.hidden_size_out)),
                                 tf.TensorShape((attn_heads, self.tot_nodes, self.tot_nodes))]
@@ -202,19 +199,17 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, tf.keras.__internal__.layers.B
         self.b_c = self.add_weight(shape=(self.hidden_size_out,), initializer=init.zeros, name="b_c",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
         self.W_u = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
-                                   initializer=self.initializer, name="W_u_p",
+                                   initializer=self.initializer(seed=0),
+                                   name="W_u_p",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
         self.W_r = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
-                                   initializer=self.initializer, name="W_r_p",
+                                   initializer=self.initializer(seed=1),
+                                   name="W_r_p",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
         self.W_c = self.add_weight(shape=(self.hidden_size_out + x[-1], self.hidden_size_out),
-                                   initializer=self.initializer, name="W_c_p",
+                                   initializer=self.initializer(seed=2),
+                                   name="W_c_p",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
-        if self.mincut:
-            self.W_mc = self.add_weight(shape=(self.hidden_size_out + x[-1], self.attn_heads, self.mincut),
-                                        initializer=self.initializer, name="W_c_p",
-                                        regularizer=self.regularizer, caching_device=default_caching_device)
-            self.mincut_loss = tf.TensorArray(tf.float32, 50, True)
 
     def call(self, inputs, states, training, *args, **kwargs):
         x, a = tf.nest.flatten(inputs)
@@ -525,7 +520,7 @@ class GATv2Layer(l.Layer):
                  activation="relu",
                  dropout_rate=0,
                  residual=False,
-                 initializer=init.glorot_normal,
+                 initializer=init.GlorotNormal(seed=0),
                  regularizer=None,
                  return_attn_coef=False,
                  **kwargs):
@@ -575,10 +570,12 @@ class GATv2Layer(l.Layer):
         if self.add_bias:
             self.bias = self.add_weight(name="kern_bias",
                                         shape=(1, *self.attn_shape),
-                                        caching_device=caching_device)
+                                        caching_device=caching_device,
+                                        initializer=init.Zeros())
             self.bias0 = self.add_weight(name="kern_bias_i",
                                          shape=(self.channels,),
-                                         caching_device=caching_device)
+                                         caching_device=caching_device,
+                                         initializer=init.Zeros())
 
     def call(self, inputs, training=None, mask=None):
         '''
