@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from abc import ABC, ABCMeta, abstractmethod
 from src.Environment.abstract.orders import OrderEvent, FillEvent
-from src.Environment.abstract.data_handlers import DataHandler
+from src.Environment.abstract.data_handlers import Consumer
 from src.Environment.abstract.events import Event
 from src.Environment.abstract.exchanges import Exchange
 from datetime import time, datetime, timedelta

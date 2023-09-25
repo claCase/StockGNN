@@ -1,7 +1,7 @@
 from abc import ABC, ABCMeta, abstractclassmethod, abstractmethod
 from events import Event
 import queue as q
-from data_handlers import DataHandler, GatherStore
+from data_handlers import Consumer, GatherStore
 
 
 class Symbol(ABC, GatherStore):

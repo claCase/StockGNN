@@ -3,14 +3,14 @@ import exchange_calendars as xcals
 from symbols import Symbol
 from src.Environment.abstract.orders import OrderEvent, FillEvent
 from queue import Queue
-from data_handlers import DataHandler
+from data_handlers import Consumer
 
 
 class Exchange(ABC):
     def __init__(self, name):
         self._name = name
         self._symbols = {}
-        self._order_queue: DataHandler = OrderHandler(name + "_orders")
+        self._order_queue: Consumer = OrderHandler(name + "_orders")
 
     @property
     def name(self):

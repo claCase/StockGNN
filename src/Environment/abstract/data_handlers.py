@@ -156,7 +156,7 @@ class DataLoader(ABC):
         raise NotImplementedError
 
 
-class GatherStore(ABC):
+"""class GatherStore(ABC):
     def __init__(self):
         self._data_handlers: Mapping[str:Mapping[str:Consumer]] = {}
 
@@ -210,3 +210,4 @@ class GatherStore(ABC):
             for handler_name in self._data_handlers[handler_type]:
                 items.append((handler_type, handler_name))
         return items
+"""

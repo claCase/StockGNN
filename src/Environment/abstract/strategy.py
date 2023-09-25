@@ -3,12 +3,12 @@ import exchange_calendars as xcals
 from symbols import Symbol
 from src.Environment.abstract.orders import OrderEvent
 from queue import Queue
-from data_handlers import DataHandler, GatherStore
+from data_handlers import Consumer, GatherStore
 
 
 class Strategy(ABC, GatherStore):
     def __init__(self, name=""):
-        self._data_handlers: {{DataHandler}} = {}
+        self._data_handlers: {{Consumer}} = {}
         self._name = name
         self._orders = Queue()
 
