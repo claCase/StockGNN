@@ -38,7 +38,7 @@ def main(gpu=True,
         with open(os.path.join(processed, "time_series_columns_mapping.pkl"), "rb") as file:
             columns = pkl.load(file)
         with open(os.path.join(processed, "time_series_unique_index.pkl"), "rb") as file:
-             idx_mapping = pkl.load(file)
+            idx_mapping = pkl.load(file)
 
     diff_matrix = diff_log(matrix)
 
@@ -50,8 +50,8 @@ def main(gpu=True,
                    "gatv2": True,
                    "concat_heads": False,
                    "return_attn_coef": False,
-                   "attn_heads":4,
-                   "channels":15}
+                   "attn_heads": 4,
+                   "channels": 15}
     model = build_RNNGAT(*diff_matrix.shape[1:], kwargs_cell=kwargs_cell)
     model.compile(optimizer=tf.keras.optimizers.Adam(0.001))
 
@@ -60,7 +60,7 @@ def main(gpu=True,
     t1 = 60
     dt = 60
 
-    profiler_dir = os.path.join(os.getcwd(), "../../../Analysis/Functional")
+    profiler_dir = os.path.join(os.getcwd(), "Analysis", "Functional")
     options = tf.profiler.experimental.ProfilerOptions(host_tracer_level=3,
                                                        python_tracer_level=1,
                                                        device_tracer_level=1)
