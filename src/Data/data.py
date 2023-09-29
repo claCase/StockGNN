@@ -129,30 +129,48 @@ def to_multiindex(df: pd.DataFrame):
     return tot_df
 
 
-def df_to_matrix(df: pd.DataFrame, save_path=None) -> (np.array, ({})):
+def df_to_matrix(df: pd.DataFrame,
+                 idx_mapping=None,
+                 save_path: os.path = None,
+                 name: str = "default") -> (np.array, list[dict], list):
     idx = df.index
     levels = idx.nlevels
-    maps = [{} for _ in range(levels)]
     idx_np = np.array((*zip(idx.tolist()),)).squeeze()
     unique_idx = [np.sort(np.unique(idx_np[:, i])) for i in range(levels)]
-    unique_range = [np.arange(len(i)) for i in unique_idx]
-    for l in range(levels):
-        for i, j in zip(unique_idx[l], unique_range[l]):
-            maps[l][i] = j
 
-    max_ids = [i[-1] + 1 for i in unique_range]
+    if idx_mapping is None:
+        unique_range = [np.arange(len(i)) for i in unique_idx]
+        max_ids = [i[-1] + 1 for i in unique_range]
+        maps = [{} for _ in range(levels)]
+        for l in range(levels):
+            for i, j in zip(unique_idx[l], unique_range[l]):
+                maps[l][i] = j
+    else:
+        assert len(idx_mapping) == levels
+        maps = idx_mapping
+        max_ids = [np.max(list(i.values())) for i in maps]
+
     matrix = np.zeros(shape=(*max_ids, len(df.columns)))
     for id, r in zip(idx_np, df.iterrows()):
         np_ids = [maps[i][j] for i, j in enumerate(id)]
         matrix[(*np_ids, None)] = r[1:]
 
+    columns = df.columns
+
     if save_path:
-        np.save(os.path.join(save_path, "matrix.npy"), matrix)
-        np.save(os.path.join(save_path, "unique_index_mapping.npy"), unique_idx)
-    return matrix, maps
+        try:
+            np.save(os.path.join(save_path, name + "_matrix.npy"), matrix)
+            np.save(os.path.join(save_path, name + "_unique_index.npy"), unique_idx)
+            with open(os.path.join(save_path, name + "_index_mappings.pkl"), "wb") as file:
+                pickle.dump(maps, file)
+            with open(os.path.join(save_path, name + "_columns_mapping.pkl"), "wb") as file:
+                pickle.dump(columns, file)
+        except Exception as e:
+            raise e
+    return matrix, maps, columns
 
 
-def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[Dict]] = None, **kwargs):
+def matrix_to_df(matrix: np.ndarray, idx_mapping: Optional[List[Dict]] = None, columns_mapping=None, **kwargs):
     def generate_names():
         stock_names = []
         counter = 0
@@ -168,13 +186,13 @@ def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[Dict]] = None,
     idx = sparse_matrix.indices.numpy()
     column_names = [string.ascii_letters[i] for i in range(matrix.shape[-1])]
     columns = [column_names[i[-1]] for i in idx]
-    if index_mapping is not None:
-        idx2time = dict(zip(index_mapping[0].values(), index_mapping[0].keys()))
-        idx2stock = dict(zip(index_mapping[1].values(), index_mapping[1].keys()))
+    if idx_mapping is not None:
+        idx2time = dict(zip(idx_mapping[0].values(), idx_mapping[0].keys()))
+        idx2stock = dict(zip(idx_mapping[1].values(), idx_mapping[1].keys()))
         times = [idx2time[i[0]] for i in idx]
         stocks = [idx2stock[i[1]] for i in idx]
     else:
-        start_date = datetime.fromisoformat("2000-01-01")
+        start_date = datetime.fromisoformat("2003-09-25")
         end_date = start_date + timedelta(days=matrix.shape[0] - 1)
         time_range = pd.date_range(start_date, end_date, **kwargs)
         times = [time_range[i[0]] for i in idx]
@@ -186,7 +204,113 @@ def matrix_to_df(matrix: np.ndarray, index_mapping: Optional[List[Dict]] = None,
     multiindex = pd.MultiIndex.from_tuples(idx_list, names=["time", "stock", "columns"])
     df = pd.DataFrame(sparse_matrix.values.numpy(), index=multiindex)
     df = df.unstack(-1).droplevel(0, 1)
+    if columns_mapping is not None:
+        df.columns = columns_mapping
     return df
+
+
+class TimeSeriesBatchGenerator(Sequence):
+    '''
+    Used in conjunction with stateful rnn to keep the previous batch ending hidden state. It returns batches of time
+    slices of the time series. The batches are not randomly shuffled to preserve the time order of the time series
+    args:
+    x: features time series TxNxf or nested tensor (tuple) of feature time series and adj matrix of shape (TxNxf, TxNxN)
+    y: time series targets of shape TxNxf2
+    sequence_len
+    '''
+
+    def __init__(self, x, y, sequence_len):
+        super().__init__()
+        self._sequence_len = sequence_len
+        self._initial_checks(x, y)
+
+    @property
+    def x(self):
+        return self._x
+
+    @property
+    def y(self):
+        return self._y
+
+    @property
+    def sequence_len(self):
+        return self._sequence_len
+
+    def __len__(self):
+        if self.is_input_nested:
+            shape = self._x[0].shape[0]
+        else:
+            shape = self._x.shape[0]
+        return shape // self._sequence_len
+
+    def check_len(self):
+        if self.is_input_nested:
+            shape = self._x[0].shape
+        else:
+            shape = self._x.shape
+        if self._sequence_len > shape[0]:
+            raise ValueError("seq_len cannot be greater than the length of the time series")
+
+    def __getitem__(self, idx):
+        low = idx * self._sequence_len
+        if self.is_input_nested:
+            high = tf.math.minimum((idx + 1) * self._sequence_len, self._x[0].shape[0])
+        else:
+            high = tf.math.minimum((idx + 1) * self._sequence_len, self._x.shape[0])
+
+        lam = lambda i: tf.expand_dims(i[low:high], axis=0)
+        if self.is_input_nested:
+            next_batch_x = tf.nest.map_structure(lam, self._x)
+        else:
+            next_batch_x = self._x[low:high][None, :]
+
+        if self.is_output_nested:
+            next_batch_y = tf.nest.map_structure(lam, self._y)
+        else:
+            next_batch_y = self._y[low:high][None, :]
+        return next_batch_x, next_batch_y
+
+    def __iter__(self):
+        pass
+
+    def on_epoch_end(self):
+        pass
+
+    def save(self, path, name="batch_generator"):
+        try:
+            with open(os.path.join(path, name + "_input.pkl"), "wb") as file:
+                pickle.dump(self._x, file)
+            with open(os.path.join(path, name + "_output.pkl"), "wb") as file:
+                pickle.dump(self._y, file)
+        except Exception as e:
+            raise e
+
+    def load(self, path):
+        try:
+            with open(os.path.join(path) + "_input.pkl", "rb") as file:
+                x = pickle.load(file)
+            with open(os.path.join(path) + "_output.pkl", "rb") as file:
+                y = pickle.load(file)
+        except Exception as e:
+            raise e
+        self._initial_checks(x, y)
+
+    def _initial_checks(self, x, y):
+        if tf.nest.is_nested(x):
+            self._x = [i for i in tf.nest.flatten(x)]
+            self.is_input_nested = True
+        else:
+            self._x = x
+            self.is_input_nested = False
+
+        if tf.nest.is_nested(y):
+            self._y = tf.nest.flatten(y)
+            self.is_output_nested = True
+        else:
+            self._y = y
+            self.is_output_nested = False
+
+        self.check_len()
 
 
 class StockTimeSeries:
@@ -194,11 +318,35 @@ class StockTimeSeries:
         if stock_exchange not in self.available_exchanges:
             raise ValueError(f"Exchange {stock_exchange} not in {self.available_exchanges}")
         self._data = data
-        self.stock_exchange = stock_exchange
-        self.calendar = xcals.get_calendar(self.stock_exchange)
+        self._stock_exchange = stock_exchange
+        self._calendar = xcals.get_calendar(self.stock_exchange)
         self._is_multiindex = None
         self._stocks = None
         self.check_series_index()
+
+    @property
+    def available_exchanges(self):
+        return xcals.get_calendar_names(include_aliases=True)
+
+    @property
+    def stocks(self):
+        return self._stocks
+
+    @property
+    def is_multiindex(self):
+        return self._is_multiindex
+
+    @property
+    def data(self):
+        return self._data
+
+    @property
+    def stock_exchange(self):
+        return self._stock_exchange
+
+    @property
+    def calendar(self):
+        return self._calendar
 
     def business_days(self, start: datetime, end: datetime):
         data_slice = self.__getitem__(slice(start, end)).data
@@ -314,22 +462,6 @@ class StockTimeSeries:
     def __repr__(self):
         return self._data.head(n=np.minimum(len(self._data), 50)).to_string()
 
-    @property
-    def available_exchanges(self):
-        return xcals.get_calendar_names(include_aliases=True)
-
-    @property
-    def stocks(self):
-        return self._stocks
-
-    @property
-    def is_multiindex(self):
-        return self._is_multiindex
-
-    @property
-    def data(self):
-        return self._data
-
     def __len__(self):
         return len(self._data.index)
 
@@ -345,20 +477,31 @@ class StockTimeSeries:
             self._is_multiindex = False
             self._stocks = None
 
-    def to_matrix(self, save_path) -> (np.array, {}):
+    def to_matrix(self, save_path=None) -> (np.array, list[{}], list):
         if self._is_multiindex:
             return df_to_matrix(self._data, save_path)
         else:
             raise TypeError("Only MultiIndex can be converted to dense matrix")
 
-    def ptc_change(self, log=False):
+    def set_data(self, data):
+        self._data = data
+        self.check_series_index()
+
+    def ptc_change(self, log=False, inplace=False):
         if self.is_multiindex:
             if log:
-                return self._data.groupby(level=1).apply(lambda x: np.log(1 + x.pct_change()))
+                data = self._data.groupby(level=1, group_keys=False).apply(lambda x: np.log(1 + x.pct_change()))
             else:
-                return self._data.groupby(level=1).apply(lambda x: x.pct_change())
+                data = self._data.groupby(level=1, group_keys=False).apply(lambda x: x.pct_change())
         else:
-            return self._data.pct_change()
+            data = self._data.pct_change()
+        data.replace([-np.inf, np.inf, np.nan], 0.0, inplace=True)
+        data = data[slice(data.index.get_level_values(0).unique()[1], None)]
+
+        if inplace:
+            self._data = data
+        else:
+            return StockTimeSeries(data, self.stock_exchange)
 
     def to_time_series_batch_generator(self,
                                        start_train: Optional[datetime] = None,
@@ -367,23 +510,63 @@ class StockTimeSeries:
                                        end_test: Optional[datetime] = None,
                                        start_validation: Optional[datetime] = None,
                                        end_validation: Optional[datetime] = None,
-                                       adj: Optional[np.ndarray] = None,
+                                       adj: Optional[np.ndarray] or pd.DataFrame = None,
                                        seq_len: int = 30,
                                        delta_pred: int = 1,
-                                       **kwargs):
+                                       pred_col: int or str or list[int] or list[str] = -2):
         """
         adj: Adjacency matrix for tickers, None if fully connected (ones matrix), False if not use else ndarray
         """
 
-        def get_x_y(x, delta):
+        def get_x_y(x, delta, idx_mapping=None, pred_col=pred_col):
+            cols = self._data.columns
+            if isinstance(pred_col, int):
+                idx_pred = pred_col
+            elif isinstance(pred_col, str):
+                try:
+                    idx_pred = np.argwhere(cols == pred_col)
+                except Exception as e:
+                    raise e
+            elif isinstance(pred_col, list):
+                if all(isinstance(pred_col[i], int) for i in pred_col):
+                    idx_pred = pred_col
+                elif all(isinstance(pred_col[i], str) for i in pred_col):
+                    idx_pred = [np.argwhere(cols == i) for i in pred_col]
+                    if np.empty(idx_pred):
+                        raise ValueError(f"Columns {pred_col} not found, columns available are {cols}")
+                else:
+                    raise TypeError(f"List of prediction columns has to be either int or string")
+            elif isinstance(pred_col, slice):
+                if not isinstance(pred_col.start, int) and isinstance(pred_col.stop, int):
+                    idx_pred = pred_col
+                if isinstance(pred_col.start, str) and isinstance(pred_col.stop, str):
+                    cols = cols.sort_values()
+                    start = np.argwhere(cols == pred_col.start)
+                    stop = np.argwhere(cols == pred_col.stop)
+                    idx_pred = slice(start, stop)
+            else:
+                raise TypeError(f"Cannot use type {type(pred_col)} for selecting the prediction columns."
+                                f"Types can either be int, str, list[int], list[str]")
+
             if isinstance(x, pd.DataFrame):
                 assert delta < x.index.levshape[0] // 2
-                x, _ = df_to_matrix(x)
+                x, maps, _ = df_to_matrix(x, idx_mapping=idx_mapping)
+                out_ = x[delta:, :, idx_pred]
+                if len(out_.shape) == 2:
+                    out_ = np.expand_dims(out_, -1)
+                in_ = x[:-delta]
+                return in_, out_, maps
+
             elif isinstance(x, np.ndarray):
-                assert delta < len(x) // 2
-            y_train = x[delta:]
-            x_train = x[:-delta]
-            return x_train, y_train
+                assert delta < len(x) // 2 and idx_mapping is None
+                out_ = x[delta:, :, idx_pred]
+                if len(out_.shape) == 2:
+                    out_ = np.expand_dims(out_, -1)
+                in_ = x[:-delta]
+                return in_, out_
+
+            else:
+                raise TypeError(f"Type {type(x)} not supported, only np.array and pd.DataFrame")
 
         assert self._is_multiindex and self._data.index.get_level_values(
             0).freq != '', "Data is not Multiindex and the datetime index frequency is not defined"
@@ -392,93 +575,81 @@ class StockTimeSeries:
         if end_train is None:
             end_train = self._data.index.max()[0]
 
+        assert start_train < end_train
+
         if start_test is not None:
-            if start_train < start_test < end_train:
-                logging.WARNING(f"Start test date {start_test} is in between start train date {start_train}"
-                                f" and end training date {end_train}")
-        if end_test is not None:
-            if start_train < end_test < end_train:
-                logging.WARNING(f"End test date {start_test} is in between start train date {start_train}"
-                                f" and end training date {end_train}")
+            if end_test is None:
+                assert end_train is not None
+            assert end_train < start_test and end_train < end_test and start_validation is None
+
         if start_validation is not None:
-            if ((start_train < start_validation < end_train) or
-                    (start_test < start_validation < end_test)):
-                logging.WARNING(
-                    f"Start validation date {start_validation} is in between start train date {start_train}"
-                    f" and end training date {end_train}")
-        if end_validation is not None:
-            if ((start_train < end_validation < end_train) or
-                    (start_test < end_validation < end_test)):
-                logging.WARNING(
-                    f"Start validation date {end_validation} is in between start train date {start_train}"
-                    f" and end training date {end_train}")
+            if end_validation is None:
+                assert end_test < start_validation
 
+        tot_data_matrix, maps, cols = self.to_matrix()
         x_train = self.__getitem__(slice(start_train, end_train))
+        unique_dates = list(maps[0].keys())
+        idx_start_train = np.argwhere(unique_dates == np.asarray(x_train.data.index.min()[0]))[0][0]
+        idx_end_train = np.argwhere(unique_dates == np.asarray(x_train.data.index.max()[0]))[0][0]
+        x_train, y_train = get_x_y(tot_data_matrix[idx_start_train:idx_end_train], delta_pred)
+        train_dates = unique_dates[idx_start_train+delta_pred:idx_end_train]
 
         if adj:
-            idx_start_train = self._data.index.get_loc(x_train.data.index.min()[0])
-            diff_train = len(x_train.data.index.unique(0))
             if isinstance(adj, bool):
-                adj_train = np.ones(shape=(diff_train, len(self._stocks), len(self._stocks)))
+                adj_train = np.ones(shape=(len(x_train), len(self._stocks), len(self._stocks)))
+            elif isinstance(adj, np.ndarray):
+                assert len(adj.shape) == 3
+                times, stocks, _ = adj.shape
+                times_, stocks_, _ = self._data.index.levshape
+                assert times == times_ and stocks == stocks_
+                adj_train = adj[idx_start_train:idx_end_train]
             else:
-                adj_train = adj[idx_start_train:idx_start_train + diff_train]
-            x_adj_train, y_adj_train = get_x_y(adj_train, delta_pred)
-        x_train, y_train = get_x_y(x_train.data, delta_pred)
-
-        if start_test is not None:
-            x_test = self.__getitem__(slice(start_test, end_test))
-            if adj:
-                idx_start_test = self._data.index.get_loc(x_test.data.index.min()[0])
-                diff_test = len(x_test.data.index.unique())
-                assert idx_start_test + diff_test <= self._data.index.levshape[0], f"Choose another end date {end_test}"
-                if isinstance(adj, bool):
-                    adj_test = np.ones(shape=(diff_test, len(self._stocks), len(self._stocks)))
-                else:
-                    adj_test = adj[idx_start_test:idx_start_test + diff_test]
-                x_adj_test, y_adj_test = get_x_y(adj_test, delta_pred)
-            x_test, y_test = get_x_y(x_test.data, delta_pred)
-        else:
-            x_test = None
-
-        if start_validation is not None:  # and end_validation is not None:
-            x_validation = self.__getitem__(slice(start_validation, end_validation))
-            if adj:
-                idx_start_validation = self._data.index.get_loc(x_validation.data.index.min()[0])
-                diff_validation = len(x_validation.data.index.unique())
-                assert idx_start_validation + diff_validation <= self._data.index.levshape[
-                    0], f"Choose another end date {end_validation}"
-                if isinstance(adj, bool):
-                    adj_validation = np.ones(shape=(diff_validation, len(self._stocks), len(self._stocks)))
-                else:
-                    adj_validation = adj[idx_start_validation:idx_start_validation + diff_validation]
-                x_adj_validation, y_adj_validation = get_x_y(adj_validation, delta_pred)
-            x_validation, y_validation = get_x_y(x_validation.data, delta_pred)
-        else:
-            x_validation = None
-
-        if x_validation is None:
-            validation = None
-        else:
-            if adj:
-                validation = TimeSeriesBatchGenerator((x_validation, x_adj_validation),
-                                                      (y_validation, y_adj_validation), seq_len)
-            else:
-                validation = TimeSeriesBatchGenerator(x_validation, y_validation, seq_len)
-
-        if x_test is None:
-            test = None
-        else:
-            if adj:
-                test = TimeSeriesBatchGenerator((x_test, x_adj_test), (y_test, y_adj_test), seq_len)
-            else:
-                test = TimeSeriesBatchGenerator(x_test, y_test, seq_len)
-
-        if adj:
-            train = TimeSeriesBatchGenerator((x_train, x_adj_train), (y_train, y_adj_train), seq_len)
+                raise NotImplementedError()
+            train = TimeSeriesBatchGenerator((x_train, adj_train), y_train, seq_len)
         else:
             train = TimeSeriesBatchGenerator(x_train, y_train, seq_len)
 
-        return train, test, validation
+        if start_test is not None:
+            x_test = self.__getitem__(slice(start_test, end_test))
+            idx_start_test = np.argwhere(unique_dates == np.asarray(x_test.data.index.min()[0]))[0][0]
+            idx_end_test = np.argwhere(unique_dates == np.asarray(x_test.data.index.max()[0]))[0][0]
+            x_test, y_test = get_x_y(tot_data_matrix[idx_start_test:idx_end_test], delta_pred)
+            test_dates = unique_dates[idx_start_test+delta_pred:idx_end_test]
+            if adj:
+                if isinstance(adj, bool):
+                    adj_test = np.ones(shape=(len(x_test), len(self._stocks), len(self._stocks)))
+                elif isinstance(adj, np.ndarray):
+                    adj_test = adj[idx_start_test:idx_end_test]
+                else:
+                    raise NotImplementedError()
+                test = TimeSeriesBatchGenerator((x_test, adj_test), y_test, seq_len)
+            else:
+                test = TimeSeriesBatchGenerator(x_test, y_test, seq_len)
+
+        else:
+            test = None
+            test_dates = None
+
+        if start_validation is not None:
+            x_validation = self.__getitem__(slice(start_validation, end_validation))
+            idx_start_validation = np.argwhere(unique_dates == np.asarray(x_validation.data.index.min())[0])[0][0]
+            idx_end_validation = np.argwhere(unique_dates == np.asarray(x_validation.data.index.max())[0])[0][0]
+            x_validation, y_validation = get_x_y(tot_data_matrix[idx_start_validation:idx_end_validation], delta_pred)
+            validation_dates = unique_dates[idx_start_validation+delta_pred:idx_end_validation]
+            if adj:
+                if isinstance(adj, bool):
+                    adj_validation = np.ones(shape=(len(x_validation), len(self._stocks), len(self._stocks)))
+                elif isinstance(adj, np.ndarray):
+                    adj_validation = adj[idx_start_validation:idx_end_validation]
+                else:
+                    raise NotImplementedError()
+                validation = TimeSeriesBatchGenerator((x_validation, adj_validation), y_validation, seq_len)
+            else:
+                validation = TimeSeriesBatchGenerator(x_validation, y_validation, seq_len)
+        else:
+            validation = None
+            validation_dates = None
+        return (train, train_dates), (test, test_dates), (validation, validation_dates)
 
     def save(self, path, name="stock_time_series"):
         try:
@@ -491,107 +662,6 @@ class StockTimeSeries:
             self._data = pd.load_csv(path)
         except Exception as e:
             raise e
-
-
-class TimeSeriesBatchGenerator(Sequence):
-    '''
-    Used in conjunction with stateful rnn to keep the previous batch ending hidden state. It returns batches of time
-    slices of the time series. The batches are not randomly shuffled to preserve the time order of the time series
-    args:
-    x: features time series TxNxf or nested tensor (tuple) of feature time series and adj matrix of shape (TxNxf, TxNxN)
-    y: time series targets of shape TxNxf2
-    sequence_len
-    '''
-
-    def __init__(self, x, y, sequence_len):
-        super().__init__()
-        self._sequence_len = sequence_len
-        self._initial_checks(x, y)
-
-    @property
-    def x(self):
-        return self._x
-
-    @property
-    def y(self):
-        return self._y
-
-    @property
-    def sequence_len(self):
-        return self._sequence_len
-
-    def __len__(self):
-        if self.is_input_nested:
-            shape = self._x[0].shape[0]
-        else:
-            shape = self._x.shape[0]
-        return shape // self._sequence_len
-
-    def check_len(self):
-        if self.is_input_nested:
-            shape = self._x[0].shape
-        else:
-            shape = self._x.shape
-        if self._sequence_len > shape[0]:
-            raise ValueError("seq_len cannot be greater than the length of the time series")
-
-    def __getitem__(self, idx):
-        low = idx * self._sequence_len
-        if self.is_input_nested:
-            high = tf.math.minimum((idx + 1) * self._sequence_len, self._x[0].shape[0])
-        else:
-            high = tf.math.minimum((idx + 1) * self._sequence_len, self._x.shape[0])
-
-        if self.is_input_nested:
-            lam = lambda i: tf.expand_dims(i[low:high], axis=0)
-            next_batch_x = tf.nest.map_structure(lam, self._x)
-            next_batch_y = tf.nest.map_structure(lam, self._y)
-        else:
-            next_batch_x = self._x[low:high][None, :]
-            next_batch_y = self._y[low:high][None, :]
-        return next_batch_x, next_batch_y
-
-    def __iter__(self):
-        pass
-
-    def on_epoch_end(self):
-        pass
-
-    def save(self, path, name="batch_generator"):
-        try:
-            with open(os.path.join(path, name + "_input.pkl"), "wb") as file:
-                pickle.dump(self._x, file)
-            with open(os.path.join(path, name + "_output.pkl"), "wb") as file:
-                pickle.dump(self._y, file)
-        except Exception as e:
-            raise e
-
-    def load(self, path):
-        try:
-            with open(os.path.join(path) + "_input.pkl", "rb") as file:
-                x = pickle.load(file)
-            with open(os.path.join(path) + "_output.pkl", "rb") as file:
-                y = pickle.load(file)
-        except Exception as e:
-            raise e
-        self._initial_checks(x, y)
-
-    def _initial_checks(self, x, y):
-        if tf.nest.is_nested(x):
-            self._x = [i for i in tf.nest.flatten(x)]
-            self.is_input_nested = True
-        else:
-            self._x = x
-            self.is_input_nested = False
-
-        if tf.nest.is_nested(y):
-            self._y = tf.nest.flatten(y)
-            self.is_output_nested = True
-        else:
-            self._y = y
-            self.is_output_nested = False
-
-        self.check_len()
 
 
 if __name__ == "__main__":

@@ -150,7 +150,7 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, tf.keras.__internal__.layers.B
                  regularizer=None,
                  return_attn_coef=False,
                  layer_norm=False,
-                 initializer=init.GlorotNormal,
+                 initializer="glorot_normal",
                  gatv2: bool = True,
                  **kwargs):
         super(NestedGRUGATCellSingle, self).__init__(**kwargs)
@@ -199,15 +199,15 @@ class NestedGRUGATCellSingle(DropoutRNNCellMixin, tf.keras.__internal__.layers.B
         self.b_c = self.add_weight(shape=(self.hidden_size_out,), initializer=init.zeros, name="b_c",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
         self.W_u = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
-                                   initializer=self.initializer(seed=0),
+                                   initializer=init.get(self.initializer),
                                    name="W_u_p",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
         self.W_r = self.add_weight(shape=(self.hidden_size_out, self.hidden_size_out),
-                                   initializer=self.initializer(seed=1),
+                                   initializer=init.get(self.initializer),
                                    name="W_r_p",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
         self.W_c = self.add_weight(shape=(self.hidden_size_out + x[-1], self.hidden_size_out),
-                                   initializer=self.initializer(seed=2),
+                                   initializer=init.get(self.initializer),
                                    name="W_c_p",
                                    regularizer=self.regularizer, caching_device=default_caching_device)
 

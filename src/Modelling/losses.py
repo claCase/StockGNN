@@ -1,13 +1,15 @@
 import tensorflow as tf
 from src.Modelling.utils import normalize_adj, node_degree
 
-klos = tf.keras.losses
+klo = tf.keras.losses
 
 
 def custom_mse(y_true, y_pred):
+    y_pred = tf.convert_to_tensor(y_pred)
+    y_true = tf.cast(y_true, y_pred.dtype)
     y_true = tf.reshape(y_true, (-1, 1))
     y_pred = tf.reshape(y_pred, (-1, 1))
-    return tf.reduce_mean(klos.mse(y_true, y_pred))
+    return tf.reduce_mean((y_true - y_pred)**2)
 
 
 def min_cut(A, S, normalize=True):

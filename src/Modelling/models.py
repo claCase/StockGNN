@@ -12,34 +12,63 @@ init = tf.keras.initializers
 
 def build_RNNGAT(nodes,
                  input_features,
-                 *args,
-                 kwargs_cell={"dropout": 0.01,
-                              "activation": "relu",
-                              "recurrent_dropout": 0.01,
-                              "hidden_size_out": 15,
-                              "regularizer": "l2",
-                              "layer_norm": False,
-                              "gatv2": True,
-                              "concat_heads": False,
-                              "return_attn_coef": False,
-                              "attn_heads": 4,
-                              "channels": 15},
-                 kwargs_rnn={"stateful": False,
-                             "return_sequences": True,
-                             "return_state": True},
-                 kwargs_out={"units": 1, "activation": "tanh"},
-                 single=True):
+                 dropout=0.01,
+                 activation="relu",
+                 recurrent_dropout=0.01,
+                 regularizer="l2",
+                 layer_norm=False,
+                 gatv2=True,
+                 concat_heads=False,
+                 return_attn_coef=False,
+                 attn_heads=4,
+                 channels=15,
+                 stateful=True,
+                 return_sequences=True,
+                 return_state=True,
+                 add_bias=True,
+                 units=1,
+                 output_activation="tanh",
+                 single=True,
+                 initializer="glorot_normal"):
     i1 = tf.keras.Input(shape=(None, nodes, input_features), batch_size=1)
     i2 = tf.keras.Input(shape=(None, nodes, nodes), batch_size=1)
     if single:
-        cell = NestedGRUGATCellSingle(nodes, *args, **kwargs_cell)
+        cell = NestedGRUGATCellSingle(nodes,
+                                      dropout=dropout,
+                                      recurrent_dropout=recurrent_dropout,
+                                      attn_heads=attn_heads,
+                                      channels=channels,
+                                      concat_heads=concat_heads,
+                                      add_bias=add_bias,
+                                      activation=activation,
+                                      regularizer=regularizer,
+                                      return_attn_coef=return_attn_coef,
+                                      layer_norm=layer_norm,
+                                      initializer=initializer,
+                                      gatv2=gatv2)
     else:
-        cell = NestedGRUGATCell(nodes, *args, **kwargs_cell)
-    rnn = l.RNN(cell, **kwargs_rnn, time_major=False)
-    pred_layer = l.Dense(**kwargs_out)
-    # pred_layer = l.Dense(1, **kwargs_out)
+        cell = NestedGRUGATCell(nodes,
+                                dropout=dropout,
+                                recurrent_dropout=recurrent_dropout,
+                                attn_heads=attn_heads,
+                                channels=channels,
+                                concat_heads=concat_heads,
+                                add_bias=add_bias,
+                                activation=activation,
+                                regularizer=regularizer,
+                                return_attn_coef=return_attn_coef,
+                                layer_norm=layer_norm,
+                                initializer=initializer,
+                                gatv2=gatv2)
+
+    rnn = l.RNN(cell,
+                stateful=stateful,
+                return_sequences=return_sequences,
+                return_state=return_state,
+                time_major=False)
+    pred_layer = l.Dense(units=units, activation=output_activation)
     o, h = rnn((i1, i2))
-    if kwargs_cell.get("retun_attn_coef"):
+    if return_attn_coef:
         p = pred_layer(o[0])
     else:
         p = pred_layer(o)
@@ -84,7 +113,7 @@ class RNNGAT(m.Model):
                  regularizer=None,
                  return_attn_coef=False,
                  layer_norm=False,
-                 initializer=init.GlorotNormal,
+                 initializer="glorot_normal",
                  gatv2=True,
                  single_gnn=True,
                  return_sequences=True,
@@ -117,9 +146,6 @@ class RNNGAT(m.Model):
         self.unroll = unroll
         self.single_gnn = single_gnn
         self.out_channels = out_channels
-
-    def build(self, input_shape):
-        x, a = input_shape
 
         if self.single_gnn:
             rnn_cell = NestedGRUGATCellSingle(
@@ -160,9 +186,12 @@ class RNNGAT(m.Model):
                          stateful=self.stateful,
                          unroll=self.unroll,
                          time_major=False)
+        self.pred_out = l.Dense(self.out_channels, self.output_activation)
+
+    def build(self, input_shape):
+        x, a = input_shape
         self.rnn.build((x, a))
         rnn_out_shape = self.rnn.compute_output_shape((x, a))
-        self.pred_out = l.Dense(self.out_channels, self.output_activation)
         self.pred_out.build(rnn_out_shape[0])
 
     @tf.function
@@ -229,9 +258,11 @@ class RNNGAT(m.Model):
     def from_config(cls, config, custom_objects=None):
         return cls(**config)
 
-    def get_model(self, input_features):
-        i1 = tf.keras.Input(shape=(None, self.nodes, input_features))
-        i2 = tf.keras.Input(shape=(None, self.nodes, self.nodes))
+    def get_model(self, input_features, batch_size=None):
+        if self.stateful and batch_size is None:
+            raise ValueError("If stateful then batch_size is required, otherwise it can lead to expensive re-tracing")
+        i1 = tf.keras.Input(shape=(None, self.nodes, input_features), batch_size=batch_size)
+        i2 = tf.keras.Input(shape=(None, self.nodes, self.nodes), batch_size=batch_size)
         o, h = self.rnn((i1, i2))
         if self.return_attn_coef:
             p = self.pred_out(o[0])
