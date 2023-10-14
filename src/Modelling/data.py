@@ -1,3 +1,4 @@
+from tqdm import tqdm, trange
 from typing import Optional, List, Dict
 import pandas as pd
 import numpy as np
@@ -133,17 +134,19 @@ def df_to_matrix(df: pd.DataFrame,
                  idx_mapping=None,
                  save_path: os.path = None,
                  name: str = "default") -> (np.array, list[dict], list):
+    print("DataFrame to Matrix conversion")
     idx = df.index
     levels = idx.nlevels
     idx_np = np.array((*zip(idx.tolist()),)).squeeze()
     unique_idx = [np.sort(np.unique(idx_np[:, i])) for i in range(levels)]
 
     if idx_mapping is None:
+        print("Processing indices...")
         unique_range = [np.arange(len(i)) for i in unique_idx]
         max_ids = [i[-1] + 1 for i in unique_range]
         maps = [{} for _ in range(levels)]
         for l in range(levels):
-            for i, j in zip(unique_idx[l], unique_range[l]):
+            for i, j in tqdm(zip(unique_idx[l], unique_range[l]), total=len(unique_range[l])):
                 maps[l][i] = j
     else:
         assert len(idx_mapping) == levels
@@ -151,7 +154,9 @@ def df_to_matrix(df: pd.DataFrame,
         max_ids = [np.max(list(i.values())) for i in maps]
 
     matrix = np.zeros(shape=(*max_ids, len(df.columns)))
-    for id, r in zip(idx_np, df.iterrows()):
+
+    print("Assigning values to indices...")
+    for id, r in tqdm(zip(idx_np, df.iterrows()), total=len(idx_np)):
         np_ids = [maps[i][j] for i, j in enumerate(id)]
         matrix[(*np_ids, None)] = r[1:]
 
@@ -224,6 +229,7 @@ class TimeSeriesBatchGenerator(Sequence):
         self._sequence_len = sequence_len
         self._initial_checks(x, y)
 
+
     @property
     def x(self):
         return self._x
@@ -251,13 +257,16 @@ class TimeSeriesBatchGenerator(Sequence):
         if self._sequence_len > shape[0]:
             raise ValueError("seq_len cannot be greater than the length of the time series")
 
-    def __getitem__(self, idx):
+    def get_low_high(self, idx):
         low = idx * self._sequence_len
         if self.is_input_nested:
             high = tf.math.minimum((idx + 1) * self._sequence_len, self._x[0].shape[0])
         else:
             high = tf.math.minimum((idx + 1) * self._sequence_len, self._x.shape[0])
+        return low, high
 
+    def __getitem__(self, idx):
+        low, high = self.get_low_high(idx)
         lam = lambda i: tf.expand_dims(i[low:high], axis=0)
         if self.is_input_nested:
             next_batch_x = tf.nest.map_structure(lam, self._x)
@@ -311,6 +320,24 @@ class TimeSeriesBatchGenerator(Sequence):
             self.is_output_nested = False
 
         self.check_len()
+
+
+class LSTMSeriesBatchGenerator(TimeSeriesBatchGenerator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.is_input_nested is False and self.is_output_nested is False
+        self._x = tf.transpose(self._x, (1, 0, 2))  # B x T x f
+        self._y = tf.transpose(self._y, (1, 0, 2))  # B x T x 1
+
+    def __getitem__(self, idx):
+        low, high = self.get_low_high(idx)
+        next_batch_x = self._x[:, low:high]
+        next_batch_y = self._y[:, low:high]
+        return next_batch_x, next_batch_y
+
+    def __len__(self):
+        shape = self._x.shape[1]
+        return shape // self._sequence_len
 
 
 class StockTimeSeries:
@@ -503,6 +530,8 @@ class StockTimeSeries:
         else:
             return StockTimeSeries(data, self.stock_exchange)
 
+    def max_min_rescaling(self, inplace=False):
+        raise NotImplementedError
     def to_time_series_batch_generator(self,
                                        start_train: Optional[datetime] = None,
                                        end_train: Optional[datetime] = None,
@@ -592,7 +621,7 @@ class StockTimeSeries:
         idx_start_train = np.argwhere(unique_dates == np.asarray(x_train.data.index.min()[0]))[0][0]
         idx_end_train = np.argwhere(unique_dates == np.asarray(x_train.data.index.max()[0]))[0][0]
         x_train, y_train = get_x_y(tot_data_matrix[idx_start_train:idx_end_train], delta_pred)
-        train_dates = unique_dates[idx_start_train+delta_pred:idx_end_train]
+        train_dates = unique_dates[idx_start_train + delta_pred:idx_end_train]
 
         if adj:
             if isinstance(adj, bool):
@@ -614,7 +643,7 @@ class StockTimeSeries:
             idx_start_test = np.argwhere(unique_dates == np.asarray(x_test.data.index.min()[0]))[0][0]
             idx_end_test = np.argwhere(unique_dates == np.asarray(x_test.data.index.max()[0]))[0][0]
             x_test, y_test = get_x_y(tot_data_matrix[idx_start_test:idx_end_test], delta_pred)
-            test_dates = unique_dates[idx_start_test+delta_pred:idx_end_test]
+            test_dates = unique_dates[idx_start_test + delta_pred:idx_end_test]
             if adj:
                 if isinstance(adj, bool):
                     adj_test = np.ones(shape=(len(x_test), len(self._stocks), len(self._stocks)))
@@ -635,7 +664,7 @@ class StockTimeSeries:
             idx_start_validation = np.argwhere(unique_dates == np.asarray(x_validation.data.index.min())[0])[0][0]
             idx_end_validation = np.argwhere(unique_dates == np.asarray(x_validation.data.index.max())[0])[0][0]
             x_validation, y_validation = get_x_y(tot_data_matrix[idx_start_validation:idx_end_validation], delta_pred)
-            validation_dates = unique_dates[idx_start_validation+delta_pred:idx_end_validation]
+            validation_dates = unique_dates[idx_start_validation + delta_pred:idx_end_validation]
             if adj:
                 if isinstance(adj, bool):
                     adj_validation = np.ones(shape=(len(x_validation), len(self._stocks), len(self._stocks)))

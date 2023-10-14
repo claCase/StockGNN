@@ -1,10 +1,14 @@
+import logging
 from typing import List, Generic
 from abc import ABC, abstractmethod
 from src.Environment.abstract.events import (DataEvent,
                                              GatherEvent,
                                              MaximumTimeExceeded,
                                              DataProcessEvent,
-                                             DataStoreEvent)
+                                             DataStoreEvent,
+                                             DATA_STORE_MESSAGES,
+                                             DATA_GATHER_MESSAGES,
+                                             DATA_PROCESS_MESSAGES)
 from queue import Queue, PriorityQueue
 from typing import Mapping
 from datetime import datetime, timedelta
@@ -35,14 +39,14 @@ class Consumer(ABC):
         self._data_queue = PriorityQueue()
 
     @property
-    def type(self):
+    def type(self) -> str:
         return self._type
 
     @property
-    def name(self):
+    def name(self) -> str:
         return self._name
 
-    async def put_data(self, data):
+    async def put_data(self, data: DataEvent):
         await self._data_queue.put((data.datetime, data))
 
     @abstractmethod
@@ -63,21 +67,37 @@ class Consumer(ABC):
         while True:
             try:
                 priority, data = await self._data_queue.get()
+                # Put in queue an in-process event
+                in_process_event = DataProcessEvent(DATA_PROCESS_MESSAGES.PROCESSING, data.data, datetime.now())
+                await event_queue.put((datetime.now(), in_process_event))
+
+                # Processing
                 try:
                     processed_event = await asyncio.wait_for(self._preprocess(data),
                                                              self._max_process_time.total_seconds())
                     await event_queue.put((datetime.now(), processed_event))
                 except asyncio.TimeoutError as time_error:
-                    print(f"Data Processing for {self._type} {self._name} took longer than {self._max_process_time}")
-                    await event_queue.put(MaximumTimeExceeded(self._type + "_" + self._name, datetime.now()))
+                    logging.info(
+                        f"Data Processing {in_process_event.id} for {self._type} {self._name} took longer than {self._max_process_time}")
+                    failed_process_event = DataProcessEvent(DATA_PROCESS_MESSAGES.PROCESS_FAILED, data.data,
+                                                            datetime.now())
+                    await event_queue.put((datetime.now(), failed_process_event))
+                    await event_queue.put((datetime.now(),
+                                           MaximumTimeExceeded(failed_process_event.id, datetime.now())))
                     raise time_error
+
+                # Storing
+                in_storing_event = DataStoreEvent(DATA_STORE_MESSAGES.SAVING, data.data, datetime.now())
+                event_queue.put((datetime.now(), in_storing_event))
                 try:
                     store_event = await asyncio.wait_for(self._store_data(processed_event),
                                                          self._max_storing_time.total_seconds())
                     await event_queue.put((datetime.now(), store_event))
                 except asyncio.TimeoutError as time_error:
-                    print(f"Data Saving for {self._type} {self._name} took longer than {self._max_storing_time}")
-                    await event_queue.put(MaximumTimeExceeded(self._type + "_" + self._name, datetime.now()))
+                    logging.info(f"Data Saving for {self._type} {self._name} took longer than {self._max_storing_time}")
+                    failed_storing_event = DataStoreEvent(DATA_STORE_MESSAGES.SAVE_FAILED, data.data, datetime.now())
+                    await event_queue.put(
+                        (datetime.now(), MaximumTimeExceeded(failed_storing_event.id, datetime.now())))
                     raise time_error
             except asyncio.QueueEmpty as eq:
                 print(f"DataStore {self._type} {self._name} has not received data, waiting...")
@@ -100,11 +120,11 @@ class Producer(ABC):
         self._is_done = False
 
     @property
-    def type(self):
+    def type(self) -> str:
         return self._type
 
     @property
-    def name(self):
+    def name(self) -> str:
         return self._name
 
     @abstractmethod
