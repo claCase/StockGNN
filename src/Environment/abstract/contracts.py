@@ -1,6 +1,4 @@
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from src.Environment.abstract.orders import Order
+from abc import ABC
 
 
 class Contract(ABC):

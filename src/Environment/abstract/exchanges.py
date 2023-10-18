@@ -1,8 +1,6 @@
-from abc import ABCMeta, ABC, abstractmethod
-import exchange_calendars as xcals
+from abc import ABC, abstractmethod
 from symbols import Symbol
-from src.Environment.abstract.orders import OrderEvent, FillEvent
-from queue import Queue
+from src.Environment.modules.orders import OrderEvent, FillEvent
 from data_handlers import Consumer
 
 

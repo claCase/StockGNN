@@ -28,14 +28,10 @@ class Consumer(ABC):
     def __init__(self,
                  type,
                  name="default",
-                 data_wait_time: timedelta = timedelta(seconds=2),
-                 max_process_time: timedelta = timedelta(seconds=500),
-                 max_storing_time=timedelta(seconds=500)):
+                 data_wait_time: timedelta = timedelta(seconds=2)):
         self._type = type
         self._name = name
         self._data_wait_time = data_wait_time
-        self._max_process_time = max_process_time
-        self._max_storing_time = max_storing_time
         self._data_queue = PriorityQueue()
 
     @property
@@ -46,59 +42,21 @@ class Consumer(ABC):
     def name(self) -> str:
         return self._name
 
+    @property
+    def data_wait_time(self):
+        return self._data_wait_time
+    
     async def put_data(self, data: DataEvent):
         await self._data_queue.put((data.datetime, data))
 
     @abstractmethod
-    async def _preprocess(self, data: DataEvent) -> DataProcessEvent:
-        """
-            Pre-process data before storing it
-        """
-        raise NotImplementedError("Need to implement the pre-process  logic before storing the data")
-
-    @abstractmethod
-    async def _store_data(self, data_event: DataEvent) -> DataStoreEvent:
-        """
-            Stores the latest data items in Local Files or DataBase, it should return a DataEvent
-        """
-        raise NotImplementedError("Need to implement the data storing logic")
+    async def _consume(self, event_queue: PriorityQueue):
+        raise NotImplementedError("Need to implement consumer logic")
 
     async def run(self, event_queue: PriorityQueue):
         while True:
             try:
-                priority, data = await self._data_queue.get()
-                # Put in queue an in-process event
-                in_process_event = DataProcessEvent(DATA_PROCESS_MESSAGES.PROCESSING, data.data, datetime.now())
-                await event_queue.put((datetime.now(), in_process_event))
-
-                # Processing
-                try:
-                    processed_event = await asyncio.wait_for(self._preprocess(data),
-                                                             self._max_process_time.total_seconds())
-                    await event_queue.put((datetime.now(), processed_event))
-                except asyncio.TimeoutError as time_error:
-                    logging.info(
-                        f"Data Processing {in_process_event.id} for {self._type} {self._name} took longer than {self._max_process_time}")
-                    failed_process_event = DataProcessEvent(DATA_PROCESS_MESSAGES.PROCESS_FAILED, data.data,
-                                                            datetime.now())
-                    await event_queue.put((datetime.now(), failed_process_event))
-                    await event_queue.put((datetime.now(),
-                                           MaximumTimeExceeded(failed_process_event.id, datetime.now())))
-                    raise time_error
-
-                # Storing
-                in_storing_event = DataStoreEvent(DATA_STORE_MESSAGES.SAVING, data.data, datetime.now())
-                event_queue.put((datetime.now(), in_storing_event))
-                try:
-                    store_event = await asyncio.wait_for(self._store_data(processed_event),
-                                                         self._max_storing_time.total_seconds())
-                    await event_queue.put((datetime.now(), store_event))
-                except asyncio.TimeoutError as time_error:
-                    logging.info(f"Data Saving for {self._type} {self._name} took longer than {self._max_storing_time}")
-                    failed_storing_event = DataStoreEvent(DATA_STORE_MESSAGES.SAVE_FAILED, data.data, datetime.now())
-                    await event_queue.put(
-                        (datetime.now(), MaximumTimeExceeded(failed_storing_event.id, datetime.now())))
-                    raise time_error
+                await self._consume(event_queue)
             except asyncio.QueueEmpty as eq:
                 print(f"DataStore {self._type} {self._name} has not received data, waiting...")
                 await asyncio.sleep(self._data_wait_time.seconds)
@@ -110,8 +68,74 @@ class Consumer(ABC):
                 raise e
 
 
+class Processor(Consumer):
+    def __init__(self, max_process_time: timedelta = timedelta(seconds=500), *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._max_process_time = max_process_time
+
+    @property
+    def max_process_time(self):
+        return self._max_process_time
+
+    @abstractmethod
+    async def _preprocess(self, data: DataEvent) -> DataProcessEvent:
+        raise NotImplementedError
+
+    def _consume(self, event_queue: PriorityQueue):
+        priority, data = await self._data_queue.get()
+        # Put in queue an in-process event
+        in_process_event = DataProcessEvent(DATA_PROCESS_MESSAGES.PROCESSING, data.data, datetime.now())
+        await event_queue.put((datetime.now(), in_process_event))
+
+        # Processing
+        try:
+            processed_event = await asyncio.wait_for(self._preprocess(data),
+                                                     self._max_process_time.total_seconds())
+            await event_queue.put((datetime.now(), processed_event))
+        except asyncio.TimeoutError as time_error:
+            logging.info(
+                f"Data Processing {in_process_event.id} for {self._type} {self._name} took longer than {self._max_process_time}")
+            failed_process_event = DataProcessEvent(DATA_PROCESS_MESSAGES.PROCESS_FAILED, data.data,
+                                                    datetime.now())
+            await event_queue.put((datetime.now(), failed_process_event))
+            await event_queue.put((datetime.now(),
+                                   MaximumTimeExceeded(failed_process_event.id, datetime.now())))
+            raise time_error
+
+
+class Storer(Consumer):
+    def __init__(self, max_storing_time: timedelta, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._max_storing_time = max_storing_time
+
+    @property
+    def max_storing_time(self):
+        return self._max_storing_time
+
+    @abstractmethod
+    async def _store_data(self, data_event: DataEvent) -> DataStoreEvent:
+        raise NotImplementedError
+
+    async def _consume(self, event_queue: PriorityQueue):
+        priority, data = await self._data_queue.get()
+        in_storing_event = DataStoreEvent(DATA_STORE_MESSAGES.SAVING, data.data, datetime.now())
+        event_queue.put((datetime.now(), in_storing_event))
+        try:
+            store_event = await asyncio.wait_for(self._store_data(data.data),
+                                                 self._max_storing_time.total_seconds())
+            await event_queue.put((datetime.now(), store_event))
+        except asyncio.TimeoutError as time_error:
+            logging.info(f"Data Saving for {self._type} {self._name} took longer than {self._max_storing_time}")
+            failed_storing_event = DataStoreEvent(DATA_STORE_MESSAGES.SAVE_FAILED, data.data, datetime.now())
+            await event_queue.put(
+                (datetime.now(), MaximumTimeExceeded(failed_storing_event.id, datetime.now())))
+            raise time_error
+
+
 class Producer(ABC):
-    def __init__(self, type, name="default",
+    def __init__(self,
+                 type,
+                 name="default",
                  max_gathering_time: timedelta = timedelta(days=1000)):
         self._type = type
         self._name = name
@@ -148,32 +172,6 @@ class Producer(ABC):
             except KeyboardInterrupt as ek:
                 print("Keyboard Interrupt by user, exiting main loop")
                 break
-
-
-class DataStorer(ABC):
-    def __init__(self, name):
-        self._name = name
-
-    @property
-    def name(self):
-        return self._name
-
-    @abstractmethod
-    def store_data(self, data):
-        raise NotImplementedError
-
-
-class DataLoader(ABC):
-    def __init__(self, name):
-        self._name = name
-
-    @property
-    def name(self):
-        return self._name
-
-    @abstractmethod
-    def load_data(self):
-        raise NotImplementedError
 
 
 """class GatherStore(ABC):
