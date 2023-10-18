@@ -52,6 +52,11 @@ class NumpyEventSave(DataStoreEvent):
         assert self.message in DATA_STORE_MESSAGES
 
 
+class StockTimeseriesDataFrame(DataProcessEvent):
+    def __init__(self, df: pd.DataFrame, msg, datetime):
+        super().__init__(msg, df, datetime)
+
+
 class StockTimeSeriesSave(DataStoreEvent):
     def __init__(self, df: pd.DataFrame, msg, datetime):
         super(StockTimeSeriesSave, self).__init__(msg=msg, datetime=datetime, data=df)
@@ -60,9 +65,17 @@ class StockTimeSeriesSave(DataStoreEvent):
         assert self.message in DATA_STORE_MESSAGES
 
 
-class StockTimeSeriesProcess(DataStoreEvent):
+class StockTimeSeriesProcess(DataProcessEvent):
     def __init__(self, df: pd.DataFrame, msg, datetime):
         super(StockTimeSeriesProcess, self).__init__(msg=msg, datetime=datetime, data=df)
+
+    def check_message_code(self):
+        assert self.message in DATA_STORE_MESSAGES
+
+
+class StockTimeSeriesConvert(DataProcessEvent):
+    def __init__(self, df: pd.DataFrame, msg, datetime):
+        super(StockTimeSeriesConvert, self).__init__(msg=msg, datetime=datetime, data=df)
 
     def check_message_code(self):
         assert self.message in DATA_STORE_MESSAGES
