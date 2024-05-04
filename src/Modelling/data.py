@@ -1,5 +1,5 @@
-from tqdm import tqdm, trange
-from typing import Optional, List, Dict
+from tqdm import tqdm
+from typing import Optional, List, Dict, Type, Tuple, Union
 import pandas as pd
 import numpy as np
 import os
@@ -20,14 +20,18 @@ tickers_path = os.path.join(os.getcwd(), "../..", "data", "Tickers")
 
 
 def yf_to_multiindex(yf_tickers_data: pd.DataFrame) -> dict:
-    yf_tickers_data = yf_tickers_data.unstack().reset_index().pivot(index=("Date", "level_0"),
-                                                                    columns="level_1").droplevel(0, 1)
+    yf_tickers_data = (
+        yf_tickers_data.unstack()
+        .reset_index()
+        .pivot(index=("Date", "level_0"), columns="level_1")
+        .droplevel(0, 1)
+    )
     yf_tickers_data.index.names = ["time", "Ticker"]
     yf_tickers_data.columns.name = "columns"
     return yf_tickers_data
 
 
-async def get_BA_tickers_list(save_path=None) -> dict:
+async def get_BI_tickers_list(save_path=None) -> dict:
     URL = "https://www.borsaitaliana.it/borsa/azioni/listino-a-z.html?initial="
     alphabet = [string.ascii_uppercase[i] for i in range(26)]
     pages = {}
@@ -37,7 +41,9 @@ async def get_BA_tickers_list(save_path=None) -> dict:
         if not isinstance(page, bso):
             try:
                 page = bso(page, "lxml")
-                isins = (page.find("table", {"class": "m-table -firstlevel"})).find_all("a")[2::9]
+                isins = (page.find("table", {"class": "m-table -firstlevel"})).find_all(
+                    "a"
+                )[2::9]
                 for i in isins:
                     try:
                         isin = i["href"].split("/scheda/")[1][:12]
@@ -71,7 +77,11 @@ async def get_BA_tickers_list(save_path=None) -> dict:
         for page_letter in pages.keys():
             phtml = bso(pages[page_letter][1], "lxml")
             try:
-                max_n = int(phtml.find_all("ul", {"class": "nav m-pagination__nav"})[0].find_all("a")[-2].text)
+                max_n = int(
+                    phtml.find_all("ul", {"class": "nav m-pagination__nav"})[0]
+                    .find_all("a")[-2]
+                    .text
+                )
                 print(f"max page for letter {page_letter} is {max_n}")
                 for n in range(2, max_n):
                     tasks.append(get_page(session, page_letter, pages, n))
@@ -80,7 +90,11 @@ async def get_BA_tickers_list(save_path=None) -> dict:
         await aio.gather(*tasks)
 
     # extract isin and name from pages
-    isin_tasks = [get_tickers_from_page(n, tickers, i, j) for i, letter in pages.items() for j, n in letter.items()]
+    isin_tasks = [
+        get_tickers_from_page(n, tickers, i, j)
+        for i, letter in pages.items()
+        for j, n in letter.items()
+    ]
     await aio.gather(*isin_tasks)
     if save_path is not None:
         if not os.path.exists(save_path):
@@ -133,13 +147,12 @@ def to_multiindex(df: pd.DataFrame):
 def df_to_matrix(df: pd.DataFrame,
                  idx_mapping=None,
                  save_path: os.path = None,
-                 name: str = "default") -> (np.array, list[dict], list):
+                 name: str = "default") -> Tuple[np.ndarray, list[dict], list]:
     print("DataFrame to Matrix conversion")
     idx = df.index
     levels = idx.nlevels
-    idx_np = np.array((*zip(idx.tolist()),)).squeeze()
-    unique_idx = [np.sort(np.unique(idx_np[:, i])) for i in range(levels)]
-
+    unique_idx = [np.sort(np.unique(idx.get_level_values(i))) for i in range(levels)]
+    levels_name = list(idx.names)
     if idx_mapping is None:
         print("Processing indices...")
         unique_range = [np.arange(len(i)) for i in unique_idx]
@@ -148,34 +161,42 @@ def df_to_matrix(df: pd.DataFrame,
         for l in range(levels):
             for i, j in tqdm(zip(unique_idx[l], unique_range[l]), total=len(unique_range[l])):
                 maps[l][i] = j
+        matrix = np.zeros(shape=(*max_ids, len(df.columns)))
     else:
         assert len(idx_mapping) == levels
         maps = idx_mapping
         max_ids = [np.max(list(i.values())) for i in maps]
 
-    matrix = np.zeros(shape=(*max_ids, len(df.columns)))
-
     print("Assigning values to indices...")
-    for id, r in tqdm(zip(idx_np, df.iterrows()), total=len(idx_np)):
-        np_ids = [maps[i][j] for i, j in enumerate(id)]
+    for id_, r in tqdm(zip(idx.tolist(), df.iterrows()), total=len(idx)):
+        np_ids = [maps[i][j] for i, j in enumerate(id_)]
         matrix[(*np_ids, None)] = r[1:]
 
-    columns = df.columns
+    columns = list(df.columns)
 
     if save_path:
         try:
             np.save(os.path.join(save_path, name + "_matrix.npy"), matrix)
-            np.save(os.path.join(save_path, name + "_unique_index.npy"), unique_idx)
+            with open(os.path.join(save_path, name + "_unique_index.npy"), "wb") as file:
+                pickle.dump(unique_idx, file)
             with open(os.path.join(save_path, name + "_index_mappings.pkl"), "wb") as file:
                 pickle.dump(maps, file)
-            with open(os.path.join(save_path, name + "_columns_mapping.pkl"), "wb") as file:
+            with open(os.path.join(save_path, name + "_columns_names.pkl"), "wb") as file:
                 pickle.dump(columns, file)
+            with open(os.path.join(save_path, name + "_levels_names.pkl"), "wb") as file:
+                pickle.dump(levels_name, file)
         except Exception as e:
             raise e
-    return matrix, maps, columns
+    return matrix, maps, columns, levels_name
 
 
-def matrix_to_df(matrix: np.ndarray, idx_mapping: Optional[List[Dict]] = None, columns_mapping=None, **kwargs):
+
+def matrix_to_df(
+    matrix: np.ndarray,
+    idx_mapping: Optional[List[Dict]] = None,
+    columns_mapping=None,
+    **kwargs,
+):
     def generate_names():
         stock_names = []
         counter = 0
@@ -215,20 +236,19 @@ def matrix_to_df(matrix: np.ndarray, idx_mapping: Optional[List[Dict]] = None, c
 
 
 class TimeSeriesBatchGenerator(Sequence):
-    '''
+    """
     Used in conjunction with stateful rnn to keep the previous batch ending hidden state. It returns batches of time
     slices of the time series. The batches are not randomly shuffled to preserve the time order of the time series
     args:
     x: features time series TxNxf or nested tensor (tuple) of feature time series and adj matrix of shape (TxNxf, TxNxN)
     y: time series targets of shape TxNxf2
     sequence_len
-    '''
+    """
 
-    def __init__(self, x, y, sequence_len):
+    def __init__(self, x, y, sequence_len, scaling=None):
         super().__init__()
         self._sequence_len = sequence_len
         self._initial_checks(x, y)
-
 
     @property
     def x(self):
@@ -255,7 +275,9 @@ class TimeSeriesBatchGenerator(Sequence):
         else:
             shape = self._x.shape
         if self._sequence_len > shape[0]:
-            raise ValueError("seq_len cannot be greater than the length of the time series")
+            raise ValueError(
+                "seq_len cannot be greater than the length of the time series"
+            )
 
     def get_low_high(self, idx):
         low = idx * self._sequence_len
@@ -294,11 +316,11 @@ class TimeSeriesBatchGenerator(Sequence):
         except Exception as e:
             raise e
 
-    def load(self, path):
+    def load(self, path, name="batch_generator"):
         try:
-            with open(os.path.join(path) + "_input.pkl", "rb") as file:
+            with open(os.path.join(path, name + "_input.pkl", "rb")) as file:
                 x = pickle.load(file)
-            with open(os.path.join(path) + "_output.pkl", "rb") as file:
+            with open(os.path.join(path, name + "_output.pkl", "rb")) as file:
                 y = pickle.load(file)
         except Exception as e:
             raise e
@@ -320,6 +342,9 @@ class TimeSeriesBatchGenerator(Sequence):
             self.is_output_nested = False
 
         self.check_len()
+
+    def scale(self, scaling: str):
+        assert scaling in ["max_min", "zscore"]
 
 
 class LSTMSeriesBatchGenerator(TimeSeriesBatchGenerator):
@@ -343,7 +368,9 @@ class LSTMSeriesBatchGenerator(TimeSeriesBatchGenerator):
 class StockTimeSeries:
     def __init__(self, data: pd.DataFrame, stock_exchange: str):
         if stock_exchange not in self.available_exchanges:
-            raise ValueError(f"Exchange {stock_exchange} not in {self.available_exchanges}")
+            raise ValueError(
+                f"Exchange {stock_exchange} not in {self.available_exchanges}"
+            )
         self._data = data
         self._stock_exchange = stock_exchange
         self._calendar = xcals.get_calendar(self.stock_exchange)
@@ -403,6 +430,21 @@ class StockTimeSeries:
         else:
             return StockTimeSeries(new_data, self.stock_exchange)
 
+    def __truediv__(self, other):
+        self._data = self._data / other
+        return self._data
+
+    def __mul__(self, other):
+        self._data = self._data * other
+        return self._data
+
+    def __add__(self, other):
+        self._data = self._data + other
+
+    def __sub__(self, other):
+        self._data = self._data - other
+        return self._data
+
     def __getitem__(self, item):
         """
         item:
@@ -430,7 +472,9 @@ class StockTimeSeries:
 
         if isinstance(item, slice):
             i, j = item.start, item.stop
-            if (isinstance(i, datetime) or i is None) and (isinstance(j, datetime) or j is None):
+            if (isinstance(i, datetime) or i is None) and (
+                isinstance(j, datetime) or j is None
+            ):
                 if i is None:
                     if self._is_multiindex:
                         i = datetime_index.min()[0]
@@ -442,13 +486,19 @@ class StockTimeSeries:
                     else:
                         j = datetime_index.max()
                 if i > j:
-                    raise ValueError(f"Start {i} of sequence cannot be greater than End {j}")
+                    raise ValueError(
+                        f"Start {i} of sequence cannot be greater than End {j}"
+                    )
                 data = self._data.loc[i:j]
-            elif (isinstance(i, str) or i is None) and (isinstance(j, str) or j is None):
+            elif (isinstance(i, str) or i is None) and (
+                isinstance(j, str) or j is None
+            ):
                 assert self._is_multiindex
                 return self.__getitem__((((None, i), (None, j)), (None, None)))
             else:
-                raise TypeError(f"Slice start {i} and end {j} cannot be of type {type(i)}")
+                raise TypeError(
+                    f"Slice start {i} and end {j} cannot be of type {type(i)}"
+                )
         elif isinstance(item, datetime):
             start = item
             end = item + timedelta(microseconds=1)
@@ -469,7 +519,9 @@ class StockTimeSeries:
 
             if self._is_multiindex:
                 assert len(row_start_slices) > 1 and len(row_end_slices) > 1
-                idx_slice = tuple(slice(i, j) for i, j in zip(row_start_slices, row_end_slices))
+                idx_slice = tuple(
+                    slice(i, j) for i, j in zip(row_start_slices, row_end_slices)
+                )
             else:
                 assert len(row_start_slices) == 1 and len(row_end_slices) == 1
                 idx_slice = slice(row_start_slices, row_end_slices)
@@ -492,10 +544,31 @@ class StockTimeSeries:
     def __len__(self):
         return len(self._data.index)
 
+    def merge(self, other):
+        if not isinstance(other, StockTimeSeries):
+            try:
+                other = StockTimeSeries(other, self.stock_exchange)
+                assert other.is_multiindex
+            except Exception as e:
+                raise e
+        else:
+            raise ValueError(
+                f"You're tying to merge a {type(other)}, 'other' must be of type time series"
+            )
+
+        new_data = pd.concat([self._data, other.data], axis=0)
+        new_data = new_data.groupby(["datetime", "ticker"]).mean()
+        self._data = new_data
+
     def check_series_index(self):
         if isinstance(self._data.index, pd.MultiIndex):
             datetime_index = self._data.index.levels[0]
-            assert isinstance(datetime_index, pd.DatetimeIndex)
+            assert isinstance(datetime_index, pd.DatetimeIndex), print(
+                "First level of index must be datetime"
+            )
+            assert all(
+                x in {"datetime", "ticker"} for x in self._data.index.names
+            ), print("Index names must be datetime, ticker")
             self._stocks = list(self._data.index.unique(level=1))
             self._stocks.sort()
             self._is_multiindex = True
@@ -504,7 +577,7 @@ class StockTimeSeries:
             self._is_multiindex = False
             self._stocks = None
 
-    def to_matrix(self, save_path=None) -> (np.array, list[{}], list):
+    def to_matrix(self, save_path=None) -> Tuple[Type[np.array], List[Dict], List]:
         if self._is_multiindex:
             return df_to_matrix(self._data, save_path)
         else:
@@ -517,9 +590,13 @@ class StockTimeSeries:
     def ptc_change(self, log=False, inplace=False):
         if self.is_multiindex:
             if log:
-                data = self._data.groupby(level=1, group_keys=False).apply(lambda x: np.log(1 + x.pct_change()))
+                data = self._data.groupby(level=1, group_keys=False).apply(
+                    lambda x: np.log(1 + x.pct_change())
+                )
             else:
-                data = self._data.groupby(level=1, group_keys=False).apply(lambda x: x.pct_change())
+                data = self._data.groupby(level=1, group_keys=False).apply(
+                    lambda x: x.pct_change()
+                )
         else:
             data = self._data.pct_change()
         data.replace([-np.inf, np.inf, np.nan], 0.0, inplace=True)
@@ -532,17 +609,34 @@ class StockTimeSeries:
 
     def max_min_rescaling(self, inplace=False):
         raise NotImplementedError
-    def to_time_series_batch_generator(self,
-                                       start_train: Optional[datetime] = None,
-                                       end_train: Optional[datetime] = None,
-                                       start_test: Optional[datetime] = None,
-                                       end_test: Optional[datetime] = None,
-                                       start_validation: Optional[datetime] = None,
-                                       end_validation: Optional[datetime] = None,
-                                       adj: Optional[np.ndarray] or pd.DataFrame = None,
-                                       seq_len: int = 30,
-                                       delta_pred: int = 1,
-                                       pred_col: int or str or list[int] or list[str] = -2):
+
+    def normalize_prices(self, inplace=False):
+        if self._is_multiindex:
+            shifted = self._data.groupby("ticker").shift(1)
+        else:
+            shifted = self._data.shift(1)
+        prices = shifted / self._data
+        min_date = prices.index.get_level_values(0).min()
+        prices = StockTimeSeries(prices, stock_exchange=self.stock_exchange)
+        prices = prices[min_date + timedelta(days=1) : None]
+        if inplace:
+            self._data = prices
+        else:
+            return prices
+
+    def to_time_series_batch_generator(
+        self,
+        start_train: Optional[datetime] = None,
+        end_train: Optional[datetime] = None,
+        start_test: Optional[datetime] = None,
+        end_test: Optional[datetime] = None,
+        start_validation: Optional[datetime] = None,
+        end_validation: Optional[datetime] = None,
+        adj: Union[Optional[np.ndarray], Type[pd.DataFrame]] = None,
+        seq_len: int = 30,
+        delta_pred: int = 1,
+        pred_col: Union[int, str, List[int], List[str]] = -2,
+    ):
         """
         adj: Adjacency matrix for tickers, None if fully connected (ones matrix), False if not use else ndarray
         """
@@ -562,11 +656,17 @@ class StockTimeSeries:
                 elif all(isinstance(pred_col[i], str) for i in pred_col):
                     idx_pred = [np.argwhere(cols == i) for i in pred_col]
                     if np.empty(idx_pred):
-                        raise ValueError(f"Columns {pred_col} not found, columns available are {cols}")
+                        raise ValueError(
+                            f"Columns {pred_col} not found, columns available are {cols}"
+                        )
                 else:
-                    raise TypeError(f"List of prediction columns has to be either int or string")
+                    raise TypeError(
+                        f"List of prediction columns has to be either int or string"
+                    )
             elif isinstance(pred_col, slice):
-                if not isinstance(pred_col.start, int) and isinstance(pred_col.stop, int):
+                if not isinstance(pred_col.start, int) and isinstance(
+                    pred_col.stop, int
+                ):
                     idx_pred = pred_col
                 if isinstance(pred_col.start, str) and isinstance(pred_col.stop, str):
                     cols = cols.sort_values()
@@ -574,8 +674,10 @@ class StockTimeSeries:
                     stop = np.argwhere(cols == pred_col.stop)
                     idx_pred = slice(start, stop)
             else:
-                raise TypeError(f"Cannot use type {type(pred_col)} for selecting the prediction columns."
-                                f"Types can either be int, str, list[int], list[str]")
+                raise TypeError(
+                    f"Cannot use type {type(pred_col)} for selecting the prediction columns."
+                    f"Types can either be int, str, list[int], list[str]"
+                )
 
             if isinstance(x, pd.DataFrame):
                 assert delta < x.index.levshape[0] // 2
@@ -595,10 +697,13 @@ class StockTimeSeries:
                 return in_, out_
 
             else:
-                raise TypeError(f"Type {type(x)} not supported, only np.array and pd.DataFrame")
+                raise TypeError(
+                    f"Type {type(x)} not supported, only np.array and pd.DataFrame"
+                )
 
-        assert self._is_multiindex and self._data.index.get_level_values(
-            0).freq != '', "Data is not Multiindex and the datetime index frequency is not defined"
+        assert (
+            self._is_multiindex and self._data.index.get_level_values(0).freq != ""
+        ), "Data is not Multiindex and the datetime index frequency is not defined"
         if start_train is None:
             start_train = self._data.index.min()[0]
         if end_train is None:
@@ -609,7 +714,11 @@ class StockTimeSeries:
         if start_test is not None:
             if end_test is None:
                 assert end_train is not None
-            assert end_train < start_test and end_train < end_test and start_validation is None
+            assert (
+                end_train < start_test
+                and end_train < end_test
+                and start_validation is None
+            )
 
         if start_validation is not None:
             if end_validation is None:
@@ -618,14 +727,22 @@ class StockTimeSeries:
         tot_data_matrix, maps, cols = self.to_matrix()
         x_train = self.__getitem__(slice(start_train, end_train))
         unique_dates = list(maps[0].keys())
-        idx_start_train = np.argwhere(unique_dates == np.asarray(x_train.data.index.min()[0]))[0][0]
-        idx_end_train = np.argwhere(unique_dates == np.asarray(x_train.data.index.max()[0]))[0][0]
-        x_train, y_train = get_x_y(tot_data_matrix[idx_start_train:idx_end_train], delta_pred)
-        train_dates = unique_dates[idx_start_train + delta_pred:idx_end_train]
+        idx_start_train = np.argwhere(
+            unique_dates == np.asarray(x_train.data.index.min()[0])
+        )[0][0]
+        idx_end_train = np.argwhere(
+            unique_dates == np.asarray(x_train.data.index.max()[0])
+        )[0][0]
+        x_train, y_train = get_x_y(
+            tot_data_matrix[idx_start_train:idx_end_train], delta_pred
+        )
+        train_dates = unique_dates[idx_start_train + delta_pred : idx_end_train]
 
         if adj:
             if isinstance(adj, bool):
-                adj_train = np.ones(shape=(len(x_train), len(self._stocks), len(self._stocks)))
+                adj_train = np.ones(
+                    shape=(len(x_train), len(self._stocks), len(self._stocks))
+                )
             elif isinstance(adj, np.ndarray):
                 assert len(adj.shape) == 3
                 times, stocks, _ = adj.shape
@@ -640,13 +757,21 @@ class StockTimeSeries:
 
         if start_test is not None:
             x_test = self.__getitem__(slice(start_test, end_test))
-            idx_start_test = np.argwhere(unique_dates == np.asarray(x_test.data.index.min()[0]))[0][0]
-            idx_end_test = np.argwhere(unique_dates == np.asarray(x_test.data.index.max()[0]))[0][0]
-            x_test, y_test = get_x_y(tot_data_matrix[idx_start_test:idx_end_test], delta_pred)
-            test_dates = unique_dates[idx_start_test + delta_pred:idx_end_test]
+            idx_start_test = np.argwhere(
+                unique_dates == np.asarray(x_test.data.index.min()[0])
+            )[0][0]
+            idx_end_test = np.argwhere(
+                unique_dates == np.asarray(x_test.data.index.max()[0])
+            )[0][0]
+            x_test, y_test = get_x_y(
+                tot_data_matrix[idx_start_test:idx_end_test], delta_pred
+            )
+            test_dates = unique_dates[idx_start_test + delta_pred : idx_end_test]
             if adj:
                 if isinstance(adj, bool):
-                    adj_test = np.ones(shape=(len(x_test), len(self._stocks), len(self._stocks)))
+                    adj_test = np.ones(
+                        shape=(len(x_test), len(self._stocks), len(self._stocks))
+                    )
                 elif isinstance(adj, np.ndarray):
                     adj_test = adj[idx_start_test:idx_end_test]
                 else:
@@ -661,20 +786,34 @@ class StockTimeSeries:
 
         if start_validation is not None:
             x_validation = self.__getitem__(slice(start_validation, end_validation))
-            idx_start_validation = np.argwhere(unique_dates == np.asarray(x_validation.data.index.min())[0])[0][0]
-            idx_end_validation = np.argwhere(unique_dates == np.asarray(x_validation.data.index.max())[0])[0][0]
-            x_validation, y_validation = get_x_y(tot_data_matrix[idx_start_validation:idx_end_validation], delta_pred)
-            validation_dates = unique_dates[idx_start_validation + delta_pred:idx_end_validation]
+            idx_start_validation = np.argwhere(
+                unique_dates == np.asarray(x_validation.data.index.min())[0]
+            )[0][0]
+            idx_end_validation = np.argwhere(
+                unique_dates == np.asarray(x_validation.data.index.max())[0]
+            )[0][0]
+            x_validation, y_validation = get_x_y(
+                tot_data_matrix[idx_start_validation:idx_end_validation], delta_pred
+            )
+            validation_dates = unique_dates[
+                idx_start_validation + delta_pred : idx_end_validation
+            ]
             if adj:
                 if isinstance(adj, bool):
-                    adj_validation = np.ones(shape=(len(x_validation), len(self._stocks), len(self._stocks)))
+                    adj_validation = np.ones(
+                        shape=(len(x_validation), len(self._stocks), len(self._stocks))
+                    )
                 elif isinstance(adj, np.ndarray):
                     adj_validation = adj[idx_start_validation:idx_end_validation]
                 else:
                     raise NotImplementedError()
-                validation = TimeSeriesBatchGenerator((x_validation, adj_validation), y_validation, seq_len)
+                validation = TimeSeriesBatchGenerator(
+                    (x_validation, adj_validation), y_validation, seq_len
+                )
             else:
-                validation = TimeSeriesBatchGenerator(x_validation, y_validation, seq_len)
+                validation = TimeSeriesBatchGenerator(
+                    x_validation, y_validation, seq_len
+                )
         else:
             validation = None
             validation_dates = None
